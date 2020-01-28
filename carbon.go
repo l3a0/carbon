@@ -1,151 +1,252 @@
 package main
 
 import (
-    "crypto/tls"
-    "fmt"
-    "log"
-    // "math"
-    // "math/big"
-    "net"
-    "os"
-    "time"
+	"crypto/tls"
+	"fmt"
+	"log"
+	"math/big"
+	"net"
+	"time"
 
-    "github.com/ethereum/go-ethereum/ethclient"
-    "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 
-    "gopkg.in/mgo.v2"
+	"gopkg.in/mgo.v2"
 )
 
+// Account represents an account with debt.
 type Account struct {
-    address string
+	address string
+}
+
+// Token represents a token contract.
+type Token interface {
+	Name(opts *bind.CallOpts) (string, error)
+	FilterBorrowEvents(opts *bind.FilterOpts) TokenBorrowIterator
+}
+
+// TokenBorrowIterator provides a mechanism to iterate over a token's Borrow events.
+type TokenBorrowIterator interface {
+	Next() bool
+	GetEvent() TokenBorrow
+}
+
+// TokenBorrow represents a borrow event.
+type TokenBorrow interface {
+	GetBorrower() common.Address
+	GetBorrowAmount() *big.Int
+	GetAccountBorrows() *big.Int
+	GetTotalBorrows() *big.Int
+}
+
+// CBATSymbol is the CBAT symbol.
+const CBATSymbol = "CBAT"
+
+// CDAISymbol is the CDAI symbol.
+const CDAISymbol = "CDAI"
+
+// CETHSymbol is the CETH symbol.
+const CETHSymbol = "CETH"
+
+// CREPSymbol is the CREP symbol.
+const CREPSymbol = "CREP"
+
+// CSAISymbol is the CSAI symbol.
+const CSAISymbol = "CSAI"
+
+// CUSDCSymbol is the CUSDC symbol.
+const CUSDCSymbol = "CUSDC"
+
+// CWBTCSymbol is the CWBTC symbol.
+const CWBTCSymbol = "CWBTC"
+
+// CZRXSymbol is the CZRX symbol.
+const CZRXSymbol = "CZRX"
+
+var tokenAddresses = map[string]common.Address{
+	CBATSymbol:  common.HexToAddress("0x6c8c6b02e7b2be14d4fa6022dfd6d75921d90e4e"),
+	CDAISymbol:  common.HexToAddress("0x5d3a536e4d6dbd6114cc1ead35777bab948e3643"),
+	CETHSymbol:  common.HexToAddress("0x4ddc2d193948926d02f9b1fe9e1daa0718270ed5"),
+	CREPSymbol:  common.HexToAddress("0x158079ee67fce2f58472a96584a73c7ab9ac95c1"),
+	CSAISymbol:  common.HexToAddress("0xf5dce57282a584d2746faf1593d3121fcac444dc"),
+	CUSDCSymbol: common.HexToAddress("0x39AA39c021dfbaE8faC545936693aC917d5E7563"),
+	CWBTCSymbol: common.HexToAddress("0xc11b1268c1a384e55c48c2391d8d480264a3a7f4"),
+	CZRXSymbol:  common.HexToAddress("0xb3319f5d18bc0d84dd1b4825dcde5d5f7266d407"),
+}
+
+// NewToken creates a new token contract.
+func NewToken(tokenSymbol string, ethClient *ethclient.Client) Token {
+	var token Token
+	var err error
+
+	switch tokenSymbol {
+	case CBATSymbol:
+		token, err = NewCBAT(tokenAddresses[CBATSymbol], ethClient)
+	case CDAISymbol:
+		token, err = NewCDAI(tokenAddresses[CDAISymbol], ethClient)
+	case CETHSymbol:
+		token, err = NewCETH(tokenAddresses[CETHSymbol], ethClient)
+	case CREPSymbol:
+		token, err = NewCREP(tokenAddresses[CREPSymbol], ethClient)
+	case CSAISymbol:
+		token, err = NewCSAI(tokenAddresses[CSAISymbol], ethClient)
+	case CUSDCSymbol:
+		token, err = NewCUSDC(tokenAddresses[CUSDCSymbol], ethClient)
+	case CWBTCSymbol:
+		token, err = NewCWBTC(tokenAddresses[CWBTCSymbol], ethClient)
+	case CZRXSymbol:
+		token, err = NewCZRX(tokenAddresses[CZRXSymbol], ethClient)
+	}
+
+	if err != nil {
+		log.Fatalf("Failed to instantiate %#v Token contract: %#v", tokenSymbol, err)
+	}
+
+	return token
 }
 
 func main() {
-    // client, err := ethclient.Dial("/home/l3a0/.ethereum/geth.ipc")
-    client, err := ethclient.Dial("https://mainnet.infura.io")
 
-    if err != nil {
-        log.Fatal(err)
-    }
+	// ethClient, err := ethclient.Dial("/home/l3a0/.ethereum/geth.ipc")
+	ethClient, err := ethclient.Dial("https://mainnet.infura.io")
 
-    fmt.Println("we have a connection")
-    // fmt.Printf("client: %#v\n", client)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    // 0x6C34811807ad578802c0122D8A36bDF48c17d12C
-    // addressHex := "0x4ddc2d193948926d02f9b1fe9e1daa0718270ed5"
-    // address := common.HexToAddress(addressHex)
-    // fmt.Printf("address: %v\n", address)
-    // fmt.Printf("address: %+v\n", address)
-    // fmt.Printf("address: %#v\n", address)
-    // fmt.Printf("address: %T\n", address)
-    // fmt.Println("address: ", address.Hex())
-    // fmt.Println("address: ", address.Hash().Hex())
-    // fmt.Println("address: ", address.Bytes())
+	fmt.Println("we have a connection")
 
-    // balance, err := client.BalanceAt(context.Background(), address, nil)
+	accounts := make(map[string]*Account)
 
-    // if err != nil {
-    //     log.Fatal(err)
-    // }
-    
-    // fmt.Println("balance: ", balance)
+	fmt.Println("opened accounts collection")
 
-    // fbalance := new(big.Float)
-    // fbalance.SetString(balance.String())
-    // // wei / 10^18
-    // ethValue := new(big.Float).Quo(fbalance, big.NewFloat(math.Pow10(18)))
-    
-    // fmt.Println("ethValue: ", ethValue)
+	for tokenSymbol, tokenAddress := range tokenAddresses {
+		fmt.Printf("Processing accounts for token %#v @ %#v\n", tokenSymbol, tokenAddress.Hex())
 
-    // // cUSDC smart contract address
-    address := common.HexToAddress("0x39AA39c021dfbaE8faC545936693aC917d5E7563")
+		token := NewToken(tokenSymbol, ethClient)
 
-    // fmt.Println("address: ", address.Hex())
+		if token != nil {
+			name, err := token.Name(nil)
 
-    // bytecode, err := client.CodeAt(context.Background(), address, nil) // nil is latest block
+			if err != nil {
+				log.Fatalf("Failed to retrieve %#v token name: %#v", tokenSymbol, err)
+			}
 
-    // if err != nil {
-    //     log.Fatal(err)
-    // }
+			fmt.Printf("Initialized token %#v (%#v)\n", name, tokenSymbol)
 
-    // isContract := len(bytecode) > 0
+			filterOptions := &bind.FilterOpts{Start: 0, End: nil, Context: nil}
+			iter := token.FilterBorrowEvents(filterOptions)
 
-    // fmt.Printf("is contract: %v\n", isContract)
+			if iter != nil {
+				for i := 0; iter.Next(); i++ {
+					borrowEvent := iter.GetEvent()
 
-    token, err := NewCUSDC(address, client)
+					if borrowEvent != nil {
+						account := &Account{
+							address: borrowEvent.GetBorrower().Hex(),
+						}
 
-    if err != nil {
-        log.Fatalf("Failed to instantiate a Token contract: %#v", err)
-    }
-    
-    name, err := token.Name(nil)
+						// fmt.Printf("account: %#v\n", account)
+						// fmt.Printf("account: %T\n", account)
+						// fmt.Printf("Borrow[%d]: Borrower: %#v BorrowAmount: %#v AccountBorrows: %#v TotalBorrows: %#v\n", i, borrowEvent.GetBorrower().Hex(), borrowEvent.GetBorrowAmount(), borrowEvent.GetAccountBorrows(), borrowEvent.GetTotalBorrows())
 
-    if err != nil {
-        log.Fatalf("Failed to retrieve token name: %#v", err)
-    }
-    
-    fmt.Println("Token name:", name)
-    // fmt.Printf("token: %#v\n", token)
+						accounts[account.address] = account
+					}
+				}
+			}
+		}
+	}
 
-    it, err := token.FilterBorrow(nil)
+	fmt.Printf("len(accounts): %#v\n", len(accounts))
 
-    if err != nil {
-        log.Fatalf("Failed to call FilterBorrow: %#v", err)
-    }
+	database := "bao-blockchain"
+	username := "bao-blockchain"
+	password := ""
 
-    // fmt.Printf("it: %#v\n", it)
+	// DialInfo holds options for establishing a session with Azure Cosmos DB for MongoDB API account.
+	dialInfo := &mgo.DialInfo{
+		Addrs:    []string{"bao-blockchain.mongo.cosmos.azure.com:10255"}, // Get HOST + PORT
+		Timeout:  10 * time.Second,
+		Database: database,
+		Username: username,
+		Password: password,
+		DialServer: func(addr *mgo.ServerAddr) (net.Conn, error) {
+			return tls.Dial("tcp", addr.String(), &tls.Config{})
+		},
+	}
 
-    if !it.done && it.fail == nil {
-        // fmt.Println("!it.done && it.fail == nil")
+	// Create a session which maintains a pool of socket connections
+	session, err := mgo.DialWithInfo(dialInfo)
 
-        database := "bao-blockchain"
-        username := "bao-blockchain"
-        password := ""
+	if err != nil {
+		log.Fatalf("Can't connect, go error %#v\n", err)
+	}
 
-        // DialInfo holds options for establishing a session with Azure Cosmos DB for MongoDB API account.
-        dialInfo := &mgo.DialInfo{
-            Addrs:    []string{"bao-blockchain.mongo.cosmos.azure.com:10255"}, // Get HOST + PORT
-            Timeout:  10 * time.Second,
-            Database: database,
-            Username: username,
-            Password: password,
-            DialServer: func(addr *mgo.ServerAddr) (net.Conn, error) {
-                return tls.Dial("tcp", addr.String(), &tls.Config{})
-            },
-        }
+	defer session.Close()
 
-        // Create a session which maintains a pool of socket connections
-        session, err := mgo.DialWithInfo(dialInfo)
+	// CBATToken, err := NewCBAT(tokenAddresses["CBAT"], ethClient)
 
-        if err != nil {
-            fmt.Printf("Can't connect, go error %#v\n", err)
-            os.Exit(1)
-        }
+	// if err != nil {
+	// 	log.Fatalf("Failed to instantiate a Token contract: %#v", err)
+	// }
 
-        // fmt.Printf("connected to cosmos db session: %#v\n", session)
+	// name, err = CBATToken.Name(nil)
 
-        defer session.Close()
+	// if err != nil {
+	// 	log.Fatalf("Failed to retrieve token name: %#v", err)
+	// }
 
-        // get collection
-        // accounts := session.DB(database).C("accounts")
-        accounts := make(map[string]*Account)
+	// fmt.Println("Token name:", name)
 
-        fmt.Printf("opened accounts collection: %#v\n", accounts)
+	// CBATIterator, err := CBATToken.FilterBorrow(nil)
 
-        for index := 0; it.Next(); index++ {
-            borrowEvent := it.Event
+	// if err != nil {
+	// 	log.Fatalf("Failed to call FilterBorrow: %#v", err)
+	// }
 
-            account := &Account{
-                address: borrowEvent.Borrower.Hex(),
-            }
+	// for i := 0; CBATIterator.Next(); i++ {
+	// 	borrowEvent := CBATIterator.Event
 
-            // fmt.Printf("account: %#v\n", account)
-            // fmt.Printf("account: %T\n", account)
-            // fmt.Printf("Borrow[%d]: Borrower: %#v BorrowAmount: %#v AccountBorrows: %#v TotalBorrows: %#v\n", index, borrowEvent.Borrower.Hex(), borrowEvent.BorrowAmount, borrowEvent.AccountBorrows, borrowEvent.TotalBorrows)
+	// 	account := &Account{
+	// 		address: borrowEvent.Borrower.Hex(),
+	// 	}
 
-            accounts[account.address] = account
-        }
+	// 	// fmt.Printf("account: %#v\n", account)
+	// 	// fmt.Printf("account: %T\n", account)
+	// 	// fmt.Printf("Borrow[%d]: Borrower: %#v BorrowAmount: %#v AccountBorrows: %#v TotalBorrows: %#v\n", index, borrowEvent.Borrower.Hex(), borrowEvent.BorrowAmount, borrowEvent.AccountBorrows, borrowEvent.TotalBorrows)
 
-        fmt.Printf("len(accounts): %#v\n", len(accounts))
-    }
+	// 	accounts[account.address] = account
+	// }
+
+	// fmt.Printf("len(accounts): %#v\n", len(accounts))
+
+	// comptrollerAddress := common.HexToAddress("0x3d9819210a31b4961b30ef54be2aed79b9c9cd3b")
+	// comptroller, err := NewComptroller(comptrollerAddress, ethClient)
+
+	// if err != nil {
+	//     log.Fatalf("Failed to load comptroller: %#v\n", err)
+	// }
+
+	// fmt.Printf("comptroller: %#v\n", comptroller)
+
+	// i := 0
+
+	// for key, element := range accounts {
+	//     if i > 5 {
+	//         break
+	//     }
+
+	//     fmt.Println("Key:", key, "=>", "Element:", element)
+
+	//     error, liquidity, shortfall, err := comptroller.GetAccountLiquidity(nil, common.HexToAddress(element.address))
+
+	//     if err != nil {
+	//         log.Fatalf("Failed to GetAccountLiquidity: %#v\n", err)
+	//     }
+
+	//     fmt.Printf("error: %#v liquidity: %#v shortfall: %#v\n", error, liquidity, shortfall)
+	//     i++
+	// }
+	// }
 }
