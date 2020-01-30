@@ -12,18 +12,20 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	"gopkg.in/cenkalti/backoff.v2"
 	"gopkg.in/mgo.v2"
 )
 
 // Account represents an account with debt.
 type Account struct {
 	address string
+	borrows map[string]*big.Int
 }
 
 // Token represents a token contract.
 type Token interface {
 	Name(opts *bind.CallOpts) (string, error)
-	FilterBorrowEvents(opts *bind.FilterOpts) TokenBorrowIterator
+	FilterBorrowEvents(opts *bind.FilterOpts) (TokenBorrowIterator, error)
 }
 
 // TokenBorrowIterator provides a mechanism to iterate over a token's Borrow events.
@@ -40,29 +42,31 @@ type TokenBorrow interface {
 	GetTotalBorrows() *big.Int
 }
 
-// CBATSymbol is the CBAT symbol.
-const CBATSymbol = "CBAT"
+const (
+	// CBATSymbol is the CBAT symbol.
+	CBATSymbol = "CBAT"
 
-// CDAISymbol is the CDAI symbol.
-const CDAISymbol = "CDAI"
+	// CDAISymbol is the CDAI symbol.
+	CDAISymbol = "CDAI"
 
-// CETHSymbol is the CETH symbol.
-const CETHSymbol = "CETH"
+	// CETHSymbol is the CETH symbol.
+	CETHSymbol = "CETH"
 
-// CREPSymbol is the CREP symbol.
-const CREPSymbol = "CREP"
+	// CREPSymbol is the CREP symbol.
+	CREPSymbol = "CREP"
 
-// CSAISymbol is the CSAI symbol.
-const CSAISymbol = "CSAI"
+	// CSAISymbol is the CSAI symbol.
+	CSAISymbol = "CSAI"
 
-// CUSDCSymbol is the CUSDC symbol.
-const CUSDCSymbol = "CUSDC"
+	// CUSDCSymbol is the CUSDC symbol.
+	CUSDCSymbol = "CUSDC"
 
-// CWBTCSymbol is the CWBTC symbol.
-const CWBTCSymbol = "CWBTC"
+	// CWBTCSymbol is the CWBTC symbol.
+	CWBTCSymbol = "CWBTC"
 
-// CZRXSymbol is the CZRX symbol.
-const CZRXSymbol = "CZRX"
+	// CZRXSymbol is the CZRX symbol.
+	CZRXSymbol = "CZRX"
+)
 
 var tokenAddresses = map[string]common.Address{
 	CBATSymbol:  common.HexToAddress("0x6c8c6b02e7b2be14d4fa6022dfd6d75921d90e4e"),
@@ -136,29 +140,77 @@ func main() {
 			fmt.Printf("Initialized token %#v (%#v)\n", name, tokenSymbol)
 
 			filterOptions := &bind.FilterOpts{Start: 0, End: nil, Context: nil}
-			iter := token.FilterBorrowEvents(filterOptions)
+
+			var iter TokenBorrowIterator
+
+			// An operation that may fail.
+			operation := func() error {
+				iter, err = token.FilterBorrowEvents(filterOptions)
+
+				if err != nil {
+					return err
+				}
+
+				return nil
+			}
+
+			err = backoff.Retry(operation, backoff.NewExponentialBackOff())
+
+			if err != nil {
+				log.Fatalf("Failed to FilterBorrowEvents for token %#v: %#v", tokenSymbol, err)
+			}
 
 			if iter != nil {
+				fmt.Printf("Parsing accounts...\n")
 				for i := 0; iter.Next(); i++ {
 					borrowEvent := iter.GetEvent()
-
 					if borrowEvent != nil {
-						account := &Account{
-							address: borrowEvent.GetBorrower().Hex(),
+						address := borrowEvent.GetBorrower().Hex()
+						borrows := borrowEvent.GetAccountBorrows()
+						account, ok := accounts[address]
+						if !ok && borrows.Cmp(big.NewInt(0)) == 1 {
+							account = &Account{
+								address: address,
+								borrows: make(map[string]*big.Int),
+							}
+							account.borrows[tokenSymbol] = borrows
+							accounts[account.address] = account
+							// fmt.Printf("Added account: %#v. Borrowed %#v (%#v)\n", account.address, account.borrows[tokenSymbol], tokenSymbol)
+						} else if ok && borrows.Cmp(big.NewInt(0)) == 1 {
+							account.borrows[tokenSymbol] = borrows
+							// fmt.Printf("Updated account: %#v. Borrowed %#v (%#v)\n", account.address, account.borrows[tokenSymbol], tokenSymbol)
+						} else if ok && borrows.Cmp(big.NewInt(0)) < 1 {
+							account.borrows[tokenSymbol] = borrows
+							// check if all token borrows for the account are 0.
+							accountEmpty := true
+							for _, value := range account.borrows {
+								if value.Cmp(big.NewInt(0)) == 1 {
+									accountEmpty = false
+								}
+							}
+							if accountEmpty {
+								delete(accounts, address)
+								fmt.Printf("Deleted account: %#v. Balance: %#v (%#v)\n", account.address, borrows, tokenSymbol)
+							}
 						}
-
 						// fmt.Printf("account: %#v\n", account)
 						// fmt.Printf("account: %T\n", account)
 						// fmt.Printf("Borrow[%d]: Borrower: %#v BorrowAmount: %#v AccountBorrows: %#v TotalBorrows: %#v\n", i, borrowEvent.GetBorrower().Hex(), borrowEvent.GetBorrowAmount(), borrowEvent.GetAccountBorrows(), borrowEvent.GetTotalBorrows())
-
-						accounts[account.address] = account
 					}
 				}
+
 			}
 		}
 	}
 
 	fmt.Printf("len(accounts): %#v\n", len(accounts))
+
+	// for _, account := range accounts {
+	// 	fmt.Printf("Account(%#v)\n", account.address)
+	// 	for tokenSymbol, tokenBorrow := range account.borrows {
+	// 		fmt.Printf("Borrow: %#v (%#v)\n", tokenSymbol, tokenBorrow)
+	// 	}
+	// }
 
 	database := "bao-blockchain"
 	username := "bao-blockchain"
@@ -184,42 +236,6 @@ func main() {
 	}
 
 	defer session.Close()
-
-	// CBATToken, err := NewCBAT(tokenAddresses["CBAT"], ethClient)
-
-	// if err != nil {
-	// 	log.Fatalf("Failed to instantiate a Token contract: %#v", err)
-	// }
-
-	// name, err = CBATToken.Name(nil)
-
-	// if err != nil {
-	// 	log.Fatalf("Failed to retrieve token name: %#v", err)
-	// }
-
-	// fmt.Println("Token name:", name)
-
-	// CBATIterator, err := CBATToken.FilterBorrow(nil)
-
-	// if err != nil {
-	// 	log.Fatalf("Failed to call FilterBorrow: %#v", err)
-	// }
-
-	// for i := 0; CBATIterator.Next(); i++ {
-	// 	borrowEvent := CBATIterator.Event
-
-	// 	account := &Account{
-	// 		address: borrowEvent.Borrower.Hex(),
-	// 	}
-
-	// 	// fmt.Printf("account: %#v\n", account)
-	// 	// fmt.Printf("account: %T\n", account)
-	// 	// fmt.Printf("Borrow[%d]: Borrower: %#v BorrowAmount: %#v AccountBorrows: %#v TotalBorrows: %#v\n", index, borrowEvent.Borrower.Hex(), borrowEvent.BorrowAmount, borrowEvent.AccountBorrows, borrowEvent.TotalBorrows)
-
-	// 	accounts[account.address] = account
-	// }
-
-	// fmt.Printf("len(accounts): %#v\n", len(accounts))
 
 	// comptrollerAddress := common.HexToAddress("0x3d9819210a31b4961b30ef54be2aed79b9c9cd3b")
 	// comptroller, err := NewComptroller(comptrollerAddress, ethClient)

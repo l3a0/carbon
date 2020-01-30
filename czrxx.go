@@ -29,14 +29,14 @@ func (b *CZRXBorrow) GetTotalBorrows() *big.Int {
 }
 
 // FilterBorrowEvents returns the borrow events.
-func (b *CZRXFilterer) FilterBorrowEvents(opts *bind.FilterOpts) TokenBorrowIterator {
+func (b *CZRXFilterer) FilterBorrowEvents(opts *bind.FilterOpts) (TokenBorrowIterator, error) {
 	iter, err := b.FilterBorrow(opts)
 
 	if err != nil {
 		log.Fatalf("Failed to call FilterBorrow: %#v", err)
 	}
 
-	return iter
+	return iter, err
 }
 
 // GetEvent returns the Event containing the contract specifics and raw log.
