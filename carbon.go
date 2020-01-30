@@ -1,26 +1,15 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"math/big"
 
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/google/uuid"
 
-	"gopkg.in/cenkalti/backoff.v2"
-
-	"github.com/l3a0/carbon/contracts"
+	ab "github.com/l3a0/carbon/accountsbot"
 )
 
-// Account represents an account with debt.
-type Account struct {
-	address string
-	borrows map[string]*big.Int
-}
-
 func main() {
-
 	// ethClient, err := ethclient.Dial("/home/l3a0/.ethereum/geth.ipc")
 	ethClient, err := ethclient.Dial("https://mainnet.infura.io")
 
@@ -28,91 +17,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Println("we have a connection")
+	log.Printf("we have a connection\n")
 
-	accounts := make(map[string]*Account)
+	accountsBotID := uuid.New()
+	accountsBot := ab.NewAccountsBot(accountsBotID, ethClient)
+	statusChannel := make(chan int)
+	go accountsBot.Work(statusChannel)
 
-	fmt.Println("opened accounts collection")
-
-	for tokenSymbol, tokenAddress := range contracts.TokenAddresses {
-		fmt.Printf("Processing accounts for token %#v @ %#v\n", tokenSymbol, tokenAddress.Hex())
-
-		token := contracts.NewToken(tokenSymbol, ethClient)
-
-		if token != nil {
-			name, err := token.Name(nil)
-
-			if err != nil {
-				log.Fatalf("Failed to retrieve %#v token name: %#v", tokenSymbol, err)
-			}
-
-			fmt.Printf("Initialized token %#v (%#v)\n", name, tokenSymbol)
-
-			filterOptions := &bind.FilterOpts{Start: 0, End: nil, Context: nil}
-
-			var iter contracts.TokenBorrowIterator
-
-			// An operation that may fail.
-			operation := func() error {
-				iter, err = token.FilterBorrowEvents(filterOptions)
-
-				if err != nil {
-					return err
-				}
-
-				return nil
-			}
-
-			err = backoff.Retry(operation, backoff.NewExponentialBackOff())
-
-			if err != nil {
-				log.Fatalf("Failed to FilterBorrowEvents for token %#v: %#v", tokenSymbol, err)
-			}
-
-			if iter != nil {
-				fmt.Printf("Parsing accounts...\n")
-				for i := 0; iter.Next(); i++ {
-					borrowEvent := iter.GetEvent()
-					if borrowEvent != nil {
-						address := borrowEvent.GetBorrower().Hex()
-						borrows := borrowEvent.GetAccountBorrows()
-						account, ok := accounts[address]
-						if !ok && borrows.Cmp(big.NewInt(0)) == 1 {
-							account = &Account{
-								address: address,
-								borrows: make(map[string]*big.Int),
-							}
-							account.borrows[tokenSymbol] = borrows
-							accounts[account.address] = account
-							// fmt.Printf("Added account: %#v. Borrowed %#v (%#v)\n", account.address, account.borrows[tokenSymbol], tokenSymbol)
-						} else if ok && borrows.Cmp(big.NewInt(0)) == 1 {
-							account.borrows[tokenSymbol] = borrows
-							// fmt.Printf("Updated account: %#v. Borrowed %#v (%#v)\n", account.address, account.borrows[tokenSymbol], tokenSymbol)
-						} else if ok && borrows.Cmp(big.NewInt(0)) < 1 {
-							account.borrows[tokenSymbol] = borrows
-							// check if all token borrows for the account are 0.
-							accountEmpty := true
-							for _, value := range account.borrows {
-								if value.Cmp(big.NewInt(0)) == 1 {
-									accountEmpty = false
-								}
-							}
-							if accountEmpty {
-								delete(accounts, address)
-								fmt.Printf("Deleted account: %#v. Balance: %#v (%#v)\n", account.address, borrows, tokenSymbol)
-							}
-						}
-						// fmt.Printf("account: %#v\n", account)
-						// fmt.Printf("account: %T\n", account)
-						// fmt.Printf("Borrow[%d]: Borrower: %#v BorrowAmount: %#v AccountBorrows: %#v TotalBorrows: %#v\n", i, borrowEvent.GetBorrower().Hex(), borrowEvent.GetBorrowAmount(), borrowEvent.GetAccountBorrows(), borrowEvent.GetTotalBorrows())
-					}
-				}
-
-			}
-		}
-	}
-
-	fmt.Printf("len(accounts): %#v\n", len(accounts))
+	log.Printf("statusChannel: %v\n", <-statusChannel)
 
 	// for _, account := range accounts {
 	// 	fmt.Printf("Account(%#v)\n", account.address)
