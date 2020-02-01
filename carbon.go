@@ -1,62 +1,57 @@
 package main
 
 import (
+	"crypto/tls"
 	"log"
+	"net"
+	"time"
 
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/google/uuid"
 
 	ab "github.com/l3a0/carbon/accountsbot"
+
+	"gopkg.in/mgo.v2"
 )
 
 func main() {
 	// ethClient, err := ethclient.Dial("/home/l3a0/.ethereum/geth.ipc")
 	ethClient, err := ethclient.Dial("https://mainnet.infura.io")
-
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	log.Printf("we have a connection\n")
-
-	accountsBotID := uuid.New()
-	accountsBot := ab.NewAccountsBot(accountsBotID, ethClient)
-	statusChannel := make(chan int)
-	go accountsBot.Work(statusChannel)
-
-	log.Printf("statusChannel: %v\n", <-statusChannel)
-
-	// for _, account := range accounts {
-	// 	fmt.Printf("Account(%#v)\n", account.address)
-	// 	for tokenSymbol, tokenBorrow := range account.borrows {
-	// 		fmt.Printf("Borrow: %#v (%#v)\n", tokenSymbol, tokenBorrow)
-	// 	}
-	// }
-
-	// database := "bao-blockchain"
-	// username := "bao-blockchain"
-	// password := ""
-
-	// // DialInfo holds options for establishing a session with Azure Cosmos DB for MongoDB API account.
-	// dialInfo := &mgo.DialInfo{
-	// 	Addrs:    []string{"bao-blockchain.mongo.cosmos.azure.com:10255"}, // Get HOST + PORT
-	// 	Timeout:  10 * time.Second,
-	// 	Database: database,
-	// 	Username: username,
-	// 	Password: password,
-	// 	DialServer: func(addr *mgo.ServerAddr) (net.Conn, error) {
-	// 		return tls.Dial("tcp", addr.String(), &tls.Config{})
-	// 	},
-	// }
-
+	database := "bao-blockchain"
+	username := "bao-blockchain"
+	password := ""
+	// DialInfo holds options for establishing a session with Azure Cosmos DB for MongoDB API account.
+	dialInfo := &mgo.DialInfo{
+		Addrs:    []string{"bao-blockchain.mongo.cosmos.azure.com:10255"}, // Get HOST + PORT
+		Timeout:  10 * time.Second,
+		Database: database,
+		Username: username,
+		Password: password,
+		DialServer: func(addr *mgo.ServerAddr) (net.Conn, error) {
+			return tls.Dial("tcp", addr.String(), &tls.Config{})
+		},
+	}
 	// Create a session which maintains a pool of socket connections
-	// session, err := mgo.DialWithInfo(dialInfo)
-
-	// if err != nil {
-	// 	log.Fatalf("Can't connect, go error %#v\n", err)
-	// }
-
-	// defer session.Close()
+	dbSession, err := mgo.DialWithInfo(dialInfo)
+	if err != nil {
+		log.Fatalf("Can't connect to cosmos db: %#v\n", err)
+	}
+	// log.Printf("Conntected to cosmos db: %#v\n", session)
+	defer dbSession.Close()
+	botsCollection := dbSession.DB("bao-blockchain").C("bots")
+	accountsCollection := dbSession.DB("bao-blockchain").C("accounts")
+	var accountsBot ab.Bot
+	accountsBot = ab.NewAccountsBot(ethClient, botsCollection, accountsCollection)
+	status := make(chan int)
+	go accountsBot.Wake(status)
+	log.Printf("Wake status: %v\n", <-status)
+	go accountsBot.Work(status)
+	log.Printf("Work status: %v\n", <-status)
+	go accountsBot.Sleep(status)
+	log.Printf("Sleep status: %v\n", <-status)
 
 	// comptrollerAddress := common.HexToAddress("0x3d9819210a31b4961b30ef54be2aed79b9c9cd3b")
 	// comptroller, err := NewComptroller(comptrollerAddress, ethClient)

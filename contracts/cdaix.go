@@ -28,6 +28,11 @@ func (b *CDAIBorrow) GetTotalBorrows() *big.Int {
 	return b.TotalBorrows
 }
 
+// GetBlockNumber returns the block number of the event.
+func (b *CDAIBorrow) GetBlockNumber() uint64 {
+	return b.Raw.BlockNumber
+}
+
 // FilterBorrowEvents returns the borrow events.
 func (b *CDAIFilterer) FilterBorrowEvents(opts *bind.FilterOpts) (TokenBorrowIterator, error) {
 	iter, err := b.FilterBorrow(opts)
