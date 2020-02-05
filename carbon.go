@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	ab "github.com/l3a0/carbon/accountsbot"
+	c "github.com/l3a0/carbon/contracts"
 
 	"gopkg.in/mgo.v2"
 )
@@ -43,8 +44,12 @@ func main() {
 	defer dbSession.Close()
 	botsCollection := dbSession.DB("bao-blockchain").C("bots")
 	accountsCollection := dbSession.DB("bao-blockchain").C("accounts")
+	tokenContracts, err := c.NewTokenContracts(ethClient)
+	if err != nil {
+		log.Fatal(err)
+	}
 	var accountsBot ab.Bot
-	accountsBot = ab.NewAccountsBot(ethClient, botsCollection, accountsCollection)
+	accountsBot = ab.NewAccountsBot(botsCollection, accountsCollection, tokenContracts)
 	status := make(chan int)
 	go accountsBot.Wake(status)
 	log.Printf("Wake status: %v\n", <-status)

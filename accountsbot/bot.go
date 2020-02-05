@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/common"
 
 	"gopkg.in/cenkalti/backoff.v2"
 	"gopkg.in/mgo.v2"
@@ -27,9 +27,9 @@ type Bot interface {
 
 // AccountsBot maintains state for accounts with debt.
 type AccountsBot struct {
-	ethClient          *ethclient.Client
 	accounts           map[string]*m.Account
 	tokens             map[string]c.Token
+	tokenAddresses     map[string]common.Address
 	botsCollection     *mgo.Collection
 	accountsCollection *mgo.Collection
 	state              *BotState
@@ -46,11 +46,12 @@ type BotState struct {
 
 // NewAccountsBot creates a new AccountsBot.
 // TODO: Refactor dependencies into interfaces.
-func NewAccountsBot(ethClient *ethclient.Client, botsCollection *mgo.Collection, accountsCollection *mgo.Collection) *AccountsBot {
+func NewAccountsBot(botsCollection *mgo.Collection, accountsCollection *mgo.Collection, tokensProvider c.TokensProvider) *AccountsBot {
 	return &AccountsBot{
-		ethClient:          ethClient,
 		botsCollection:     botsCollection,
 		accountsCollection: accountsCollection,
+		tokens:             tokensProvider.GetTokens(),
+		tokenAddresses:     tokensProvider.GetAddresses(),
 	}
 }
 
@@ -65,96 +66,149 @@ func (bot AccountsBot) String() string {
 	return fmt.Sprintf("AccountsBot{%v}", bot.state)
 }
 
-// Wake gets the bot ready for work.
-func (bot *AccountsBot) Wake(statusChannel chan int) {
-	log.Printf("%v waking...\n", bot)
-	bot.accounts = make(map[string]*m.Account)
+func (bot *AccountsBot) insertState(state *BotState) {
+	// create the initial bot record.
+	state.ID = bson.NewObjectId()
+	state.BotType = "AccountsBot"
+	state.LastWakeTime = time.Now()
+	// An operation that may fail.
+	operation := func() error {
+		log.Printf("Inserting AccountsBot state: %v\n", state)
+		err := bot.botsCollection.Insert(state)
+		if err != nil {
+			log.Printf("Problem inserting data: %T %v %v", err, err, err.(*mgo.LastError))
+			return err
+		}
+		return nil
+	}
+	err := backoff.Retry(operation, backoff.NewExponentialBackOff())
+	if err != nil {
+		log.Fatalf("Error updating record: %T %v", err, err)
+	}
+	log.Printf("Inserted AccountsBot: %v\n", state)
+}
+
+func (bot *AccountsBot) initializeState() {
 	// restore state for accounts bot.
 	// query the db for bot with bottype == AccountsBot.
 	state := BotState{}
-	log.Printf("state.LastBlockParsedByTokenSymbol: %v\n", state.LastBorrowBlockByToken)
 	err := bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state)
 	if err != nil {
-		// log.Fatalf("Error finding record: %#v", err)
-		log.Printf("Error finding record: %v\n", err)
-		// create the initial bot record.
-		state.ID = bson.NewObjectId()
-		state.BotType = "AccountsBot"
-		state.LastWakeTime = time.Now()
-		log.Printf("Inserting AccountsBot: %v\n", state)
-		err = bot.botsCollection.Insert(state)
-		if err != nil {
-			log.Fatalf("Problem inserting data: %v", err)
-		}
-		log.Printf("Inserted AccountsBot: %v\n", state)
+		log.Printf("Could not find existing bot state: %v\n", err)
+		bot.insertState(&state)
 	} else {
 		state.LastWakeTime = time.Now()
 		updateQuery := bson.M{"_id": state.ID}
 		change := bson.M{"$set": bson.M{"lastwaketime": state.LastWakeTime}}
-		log.Printf("Updating AccountsBot: %v\n", state)
-		err = bot.botsCollection.Update(updateQuery, change)
-		if err != nil {
-			log.Fatalf("Error updating record: %v", err)
-		}
-		log.Printf("Updated AccountsBot: %v\n", state)
-	}
-	bot.state = &state
-	log.Printf("initialized %v\n", bot)
-	log.Printf("initialized accounts collection: %#v\n", bot.accounts)
-	bot.tokens = make(map[string]c.Token)
-	log.Printf("initialized tokens collection: %#v\n", bot.tokens)
-	for tokenSymbol := range c.TokenAddresses {
-		token := c.NewToken(tokenSymbol, bot.ethClient)
-		if token != nil {
-			name, err := token.Name(nil)
-			if err != nil {
-				log.Fatalf("Failed to retrieve %#v token name: %#v", tokenSymbol, err)
-			}
-			bot.tokens[tokenSymbol] = token
-			log.Printf("Initialized token %#v (%#v)\n", name, tokenSymbol)
-		}
-	}
-	statusChannel <- 0
-}
-
-// Work puts the bot to work.
-func (bot *AccountsBot) Work(status chan int) {
-	log.Printf("%v working...\n", bot)
-	// TODO: go routine per token contract?
-	for tokenSymbol, token := range bot.tokens {
-		name, err := token.Name(nil)
-		if err != nil {
-			log.Fatalf("Failed to retrieve %#v token name: %#v", tokenSymbol, err)
-		}
-		log.Printf("Processing accounts for token %#v (%#v) @ %#v\n", name, tokenSymbol, c.TokenAddresses[tokenSymbol].Hex())
-		filterOptions := &bind.FilterOpts{Start: 0, End: nil, Context: nil}
-		var iter c.TokenBorrowIterator
 		// An operation that may fail.
 		operation := func() error {
-			iter, err = token.FilterBorrowEvents(filterOptions)
+			log.Printf("Updating AccountsBot: %v\n", state)
+			err = bot.botsCollection.Update(updateQuery, change)
 			if err != nil {
+				log.Printf("Error updating record: %T %v %v", err, err, err.(*mgo.LastError))
 				return err
 			}
 			return nil
 		}
 		err = backoff.Retry(operation, backoff.NewExponentialBackOff())
 		if err != nil {
-			log.Fatalf("Failed to FilterBorrowEvents for token %#v: %#v", tokenSymbol, err)
+			log.Fatalf("Error updating record: %T %v %v", err, err, err.(*mgo.LastError))
 		}
+		log.Printf("Updated AccountsBot: %v\n", state)
+	}
+	bot.state = &state
+	log.Printf("Initialized state for %v\n", bot)
+}
+
+func (bot *AccountsBot) initializeAccounts() {
+	// restore accounts from db.
+	log.Printf("Initializing accounts for %v.\n", bot)
+	bot.accounts = make(map[string]*m.Account)
+	var accounts []*m.Account
+	err := bot.accountsCollection.Find(nil).All(&accounts)
+	if err != nil {
+		log.Fatalf("Error finding accounts: %v\n", err)
+	}
+	for _, account := range accounts {
+		bot.accounts[account.Address] = account
+	}
+	log.Printf("Initialized %v accounts for %v.\n", len(bot.accounts), bot)
+}
+
+// Wake gets the bot ready for work.
+func (bot *AccountsBot) Wake(statusChannel chan int) {
+	log.Printf("%v waking...\n", bot)
+	bot.initializeState()
+	bot.initializeAccounts()
+	statusChannel <- 0
+}
+
+func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string, token c.Token) c.TokenBorrowIterator {
+	log.Printf("Processing accounts for token %v (%v) at block # %v @ %v\n", tokenName, tokenSymbol, bot.state.LastBorrowBlockByToken[tokenSymbol], bot.tokenAddresses[tokenSymbol].Hex())
+	// +1 => exclude the last borrow block.
+	filterOptions := &bind.FilterOpts{Start: bot.state.LastBorrowBlockByToken[tokenSymbol], End: nil, Context: nil}
+	var iter c.TokenBorrowIterator
+	var err error
+	// An operation that may fail.
+	operation := func() error {
+		iter, err = token.FilterBorrowEvents(filterOptions)
+		if err != nil {
+			log.Printf("Failed to FilterBorrowEvents for token %v: %v", tokenSymbol, err)
+			return err
+		}
+		return nil
+	}
+	err = backoff.Retry(operation, backoff.NewExponentialBackOff())
+	if err != nil {
+		log.Fatalf("Failed to FilterBorrowEvents for token %v: %v", tokenSymbol, err)
+	}
+	return iter
+}
+
+// Work puts the bot to work.
+func (bot *AccountsBot) Work(status chan int) {
+	log.Printf("%v working...\n", bot)
+	// TODO: go routine per token contract?
+	modifiedAccounts := []*m.Account{}
+	for tokenSymbol, token := range bot.tokens {
+		tokenName, err := token.Name(nil)
+		if err != nil {
+			log.Fatalf("Failed to retrieve %v token name: %v", tokenSymbol, err)
+		}
+		iter := bot.filterBorrowEvents(tokenSymbol, tokenName, token)
 		if iter != nil {
 			if bot.state.LastBorrowBlockByToken == nil {
 				bot.state.LastBorrowBlockByToken = make(map[string]uint64)
 			}
-			bot.state.LastBorrowBlockByToken[tokenSymbol] = parseAccounts(iter, tokenSymbol, bot.accounts)
+			block, accounts := bot.parseAccounts(iter, tokenSymbol)
+			modifiedAccounts = append(modifiedAccounts, accounts...)
+			if block > bot.state.LastBorrowBlockByToken[tokenSymbol] {
+				bot.state.LastBorrowBlockByToken[tokenSymbol] = block
+			}
 		}
 	}
-	log.Printf("len(accounts): %#v\n", len(bot.accounts))
-	// for _, account := range accounts {
-	// 	fmt.Printf("Account(%#v)\n", account.address)
-	// 	for tokenSymbol, tokenBorrow := range account.borrows {
-	// 		fmt.Printf("Borrow: %#v (%#v)\n", tokenSymbol, tokenBorrow)
-	// 	}
-	// }
+	numberOfModifiedAccounts := len(modifiedAccounts)
+	log.Printf("numberOfModifiedAccounts: %v\n", numberOfModifiedAccounts)
+	numberOfAccounts := len(bot.accounts)
+	log.Printf("numberOfAccounts: %v\n", numberOfAccounts)
+	if numberOfAccounts > 0 {
+		for _, account := range modifiedAccounts {
+			operation := func() error {
+				fmt.Printf("Upserting account: %v\n", account)
+				_, err := bot.accountsCollection.Upsert(bson.M{"_id": account.ID}, account)
+				if err != nil {
+					log.Printf("Problem upserting data: %T %v %v", err, err, err.(*mgo.LastError))
+					return err
+				}
+				log.Printf("Upserted account: %v\n", account)
+				return nil
+			}
+			err := backoff.Retry(operation, backoff.NewExponentialBackOff())
+			if err != nil {
+				log.Fatalf("Problem upserting data: %T %v %v", err, err, err.(*mgo.LastError))
+			}
+		}
+	}
 	status <- 0
 }
 
@@ -167,32 +221,36 @@ func (bot *AccountsBot) Sleep(statusChannel chan int) {
 	log.Printf("Updating AccountsBot: %v\n", bot.state)
 	err := bot.botsCollection.Update(updateQuery, change)
 	if err != nil {
-		log.Fatalf("Error updating record: %v", err)
+		log.Fatalf("Error updating record: %T %v", err, err)
 	}
 	log.Printf("Updated AccountsBot: %v\n", bot.state)
 	statusChannel <- 0
 }
 
-func parseAccounts(iter c.TokenBorrowIterator, tokenSymbol string, accounts map[string]*m.Account) uint64 {
+func (bot *AccountsBot) parseAccounts(iter c.TokenBorrowIterator, tokenSymbol string) (uint64, []*m.Account) {
 	log.Printf("Parsing accounts...\n")
 	var lastBlock uint64 = 0
+	modifiedAccounts := map[string]*m.Account{}
 	for i := 0; iter.Next(); i++ {
 		borrowEvent := iter.GetEvent()
 		if borrowEvent != nil {
 			lastBlock = borrowEvent.GetBlockNumber()
 			address := borrowEvent.GetBorrower().Hex()
 			borrows := borrowEvent.GetAccountBorrows()
-			account, ok := accounts[address]
+			account, ok := bot.accounts[address]
 			if !ok && borrows.Cmp(big.NewInt(0)) == 1 {
 				account = &m.Account{
+					ID:      bson.NewObjectId(),
 					Address: address,
 					Borrows: make(map[string]*big.Int),
 				}
 				account.Borrows[tokenSymbol] = borrows
-				accounts[account.Address] = account
+				bot.accounts[account.Address] = account
+				modifiedAccounts[account.Address] = account
 				// fmt.Printf("Added account: %#v. Borrowed %#v (%#v)\n", account.address, account.borrows[tokenSymbol], tokenSymbol)
 			} else if ok && borrows.Cmp(big.NewInt(0)) == 1 {
 				account.Borrows[tokenSymbol] = borrows
+				modifiedAccounts[account.Address] = account
 				// fmt.Printf("Updated account: %#v. Borrowed %#v (%#v)\n", account.address, account.borrows[tokenSymbol], tokenSymbol)
 			} else if ok && borrows.Cmp(big.NewInt(0)) < 1 {
 				account.Borrows[tokenSymbol] = borrows
@@ -204,11 +262,17 @@ func parseAccounts(iter c.TokenBorrowIterator, tokenSymbol string, accounts map[
 					}
 				}
 				if accountEmpty {
-					delete(accounts, address)
+					delete(bot.accounts, address)
+					// TODO: enable deleting from cosmos db.
+					// modifiedAccounts = append(modifiedAccounts, account)
 					log.Printf("Deleted account: %#v. Balance: %#v (%#v)\n", account.Address, borrows, tokenSymbol)
 				}
 			}
 		}
 	}
-	return lastBlock
+	result := []*m.Account{}
+	for _, account := range modifiedAccounts {
+		result = append(result, account)
+	}
+	return lastBlock, result
 }

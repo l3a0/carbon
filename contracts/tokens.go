@@ -41,14 +41,39 @@ type Token interface {
 	FilterBorrowEvents(opts *bind.FilterOpts) (TokenBorrowIterator, error)
 }
 
+// TokenBorrow represents a borrow event.
+type TokenBorrow interface {
+	GetBorrower() common.Address
+	GetBorrowAmount() *big.Int
+	GetAccountBorrows() *big.Int
+	GetTotalBorrows() *big.Int
+	GetBlockNumber() uint64
+}
+
 // TokenBorrowIterator provides a mechanism to iterate over a token's Borrow events.
 type TokenBorrowIterator interface {
 	Next() bool
 	GetEvent() TokenBorrow
 }
 
+// TokensProvider provides a mechanism to initialize token contracts.
+type TokensProvider interface {
+	GetTokens() map[string]Token
+	GetAddresses() map[string]common.Address
+}
+
+// TokenContracts maintains token contract state.
+type TokenContracts struct {
+	ethClient *ethclient.Client
+	tokens    map[string]Token
+}
+
+// MockTokenContracts maintains token contract state.
+type MockTokenContracts struct {
+}
+
 // TokenAddresses contains Compound Token addresses.
-var TokenAddresses = map[string]common.Address{
+var tokenAddresses = map[string]common.Address{
 	// CBATSymbol:  common.HexToAddress("0x6c8c6b02e7b2be14d4fa6022dfd6d75921d90e4e"),
 	// CDAISymbol:  common.HexToAddress("0x5d3a536e4d6dbd6114cc1ead35777bab948e3643"),
 	// CETHSymbol:  common.HexToAddress("0x4ddc2d193948926d02f9b1fe9e1daa0718270ed5"),
@@ -59,42 +84,75 @@ var TokenAddresses = map[string]common.Address{
 	// CZRXSymbol:  common.HexToAddress("0xb3319f5d18bc0d84dd1b4825dcde5d5f7266d407"),
 }
 
-// TokenBorrow represents a borrow event.
-type TokenBorrow interface {
-	GetBorrower() common.Address
-	GetBorrowAmount() *big.Int
-	GetAccountBorrows() *big.Int
-	GetTotalBorrows() *big.Int
-	GetBlockNumber() uint64
-}
-
 // NewToken creates a new token contract.
-func NewToken(tokenSymbol string, ethClient *ethclient.Client) Token {
+func NewToken(tokenSymbol string, ethClient *ethclient.Client) (Token, error) {
 	var token Token
 	var err error
 
 	switch tokenSymbol {
 	case CBATSymbol:
-		token, err = NewCBAT(TokenAddresses[CBATSymbol], ethClient)
+		token, err = NewCBAT(tokenAddresses[CBATSymbol], ethClient)
 	case CDAISymbol:
-		token, err = NewCDAI(TokenAddresses[CDAISymbol], ethClient)
+		token, err = NewCDAI(tokenAddresses[CDAISymbol], ethClient)
 	case CETHSymbol:
-		token, err = NewCETH(TokenAddresses[CETHSymbol], ethClient)
+		token, err = NewCETH(tokenAddresses[CETHSymbol], ethClient)
 	case CREPSymbol:
-		token, err = NewCREP(TokenAddresses[CREPSymbol], ethClient)
+		token, err = NewCREP(tokenAddresses[CREPSymbol], ethClient)
 	case CSAISymbol:
-		token, err = NewCSAI(TokenAddresses[CSAISymbol], ethClient)
+		token, err = NewCSAI(tokenAddresses[CSAISymbol], ethClient)
 	case CUSDCSymbol:
-		token, err = NewCUSDC(TokenAddresses[CUSDCSymbol], ethClient)
+		token, err = NewCUSDC(tokenAddresses[CUSDCSymbol], ethClient)
 	case CWBTCSymbol:
-		token, err = NewCWBTC(TokenAddresses[CWBTCSymbol], ethClient)
+		token, err = NewCWBTC(tokenAddresses[CWBTCSymbol], ethClient)
 	case CZRXSymbol:
-		token, err = NewCZRX(TokenAddresses[CZRXSymbol], ethClient)
+		token, err = NewCZRX(tokenAddresses[CZRXSymbol], ethClient)
 	}
 
 	if err != nil {
-		log.Fatalf("Failed to instantiate %#v Token contract: %#v", tokenSymbol, err)
+		log.Printf("Failed to instantiate %#v Token contract: %#v", tokenSymbol, err)
 	}
 
-	return token
+	return token, err
+}
+
+// NewTokenContracts creates a new TokenContracts.
+func NewTokenContracts(ethClient *ethclient.Client) (TokensProvider, error) {
+	tokens := make(map[string]Token)
+	tokenContracts := &TokenContracts{ethClient: ethClient, tokens: tokens}
+	for tokenSymbol := range tokenAddresses {
+		token, err := NewToken(tokenSymbol, ethClient)
+		if err != nil {
+			return nil, err
+		}
+		if token != nil {
+			name, err := token.Name(nil)
+			if err != nil {
+				log.Fatalf("Failed to retrieve %#v token name: %#v", tokenSymbol, err)
+			}
+			tokens[tokenSymbol] = token
+			log.Printf("Initialized token %#v (%#v)\n", name, tokenSymbol)
+		}
+	}
+	log.Printf("Initialized tokens collection: %#v\n", tokens)
+	return tokenContracts, nil
+}
+
+// GetTokens returns token contracts.
+func (c *TokenContracts) GetTokens() map[string]Token {
+	return c.tokens
+}
+
+// GetAddresses returns token contract addresses.
+func (c *TokenContracts) GetAddresses() map[string]common.Address {
+	return tokenAddresses
+}
+
+// GetTokens returns token contracts.
+func (m *MockTokenContracts) GetTokens() map[string]Token {
+	return nil
+}
+
+// GetAddresses returns token contract addresses.
+func (m *MockTokenContracts) GetAddresses() map[string]common.Address {
+	return nil
 }
