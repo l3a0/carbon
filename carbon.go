@@ -15,8 +15,8 @@ import (
 )
 
 func main() {
-	// ethClient, err := ethclient.Dial("/home/l3a0/.ethereum/geth.ipc")
-	ethClient, err := ethclient.Dial("https://mainnet.infura.io")
+	ethClient, err := ethclient.Dial("/home/l3a0/.ethereum/geth.ipc")
+	// ethClient, err := ethclient.Dial("https://mainnet.infura.io")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func main() {
 	defer dbSession.Close()
 	botsCollection := dbSession.DB("bao-blockchain").C("bots")
 	accountsCollection := dbSession.DB("bao-blockchain").C("accounts")
-	tokenContracts, err := c.NewTokenContracts(ethClient)
+	tokenContracts, err := c.NewTokenContracts(ethClient, c.NewToken)
 	if err != nil {
 		log.Fatal(err)
 	}

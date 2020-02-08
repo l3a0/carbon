@@ -68,10 +68,6 @@ type TokenContracts struct {
 	tokens    map[string]Token
 }
 
-// MockTokenContracts maintains token contract state.
-type MockTokenContracts struct {
-}
-
 // TokenAddresses contains Compound Token addresses.
 var tokenAddresses = map[string]common.Address{
 	// CBATSymbol:  common.HexToAddress("0x6c8c6b02e7b2be14d4fa6022dfd6d75921d90e4e"),
@@ -116,11 +112,11 @@ func NewToken(tokenSymbol string, ethClient *ethclient.Client) (Token, error) {
 }
 
 // NewTokenContracts creates a new TokenContracts.
-func NewTokenContracts(ethClient *ethclient.Client) (TokensProvider, error) {
+func NewTokenContracts(ethClient *ethclient.Client, tokenFactory func(tokenSymbol string, ethClient *ethclient.Client) (Token, error)) (TokensProvider, error) {
 	tokens := make(map[string]Token)
 	tokenContracts := &TokenContracts{ethClient: ethClient, tokens: tokens}
 	for tokenSymbol := range tokenAddresses {
-		token, err := NewToken(tokenSymbol, ethClient)
+		token, err := tokenFactory(tokenSymbol, ethClient)
 		if err != nil {
 			return nil, err
 		}
@@ -147,6 +143,22 @@ func (c *TokenContracts) GetAddresses() map[string]common.Address {
 	return tokenAddresses
 }
 
+// MockToken is used for testing.
+type MockToken struct {
+}
+
+// MockTokenContracts maintains token contract state.
+type MockTokenContracts struct {
+}
+
+// MockNewToken creates mock tokens.
+func MockNewToken(tokenSymbol string, ethClient *ethclient.Client) (Token, error) {
+	var token Token = &MockToken{}
+	var err error = nil
+
+	return token, err
+}
+
 // GetTokens returns token contracts.
 func (m *MockTokenContracts) GetTokens() map[string]Token {
 	return nil
@@ -155,4 +167,14 @@ func (m *MockTokenContracts) GetTokens() map[string]Token {
 // GetAddresses returns token contract addresses.
 func (m *MockTokenContracts) GetAddresses() map[string]common.Address {
 	return nil
+}
+
+// Name returns the token name
+func (t *MockToken) Name(opts *bind.CallOpts) (string, error) {
+	return "MockToken", nil
+}
+
+// FilterBorrowEvents returns the borrow events.
+func (t *MockToken) FilterBorrowEvents(opts *bind.FilterOpts) (TokenBorrowIterator, error) {
+	return nil, nil
 }
