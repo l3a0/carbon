@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -70,14 +71,14 @@ func TestTokenContracts_GetTokens(t *testing.T) {
 				ethClient: mockEthClient,
 			},
 			want: map[string]Token{
-				CBATSymbol: mockToken,
-				CDAISymbol: mockToken,
-				CETHSymbol: mockToken,
-				CREPSymbol: mockToken,
-				CSAISymbol: mockToken,
+				CBATSymbol:  mockToken,
+				CDAISymbol:  mockToken,
+				CETHSymbol:  mockToken,
+				CREPSymbol:  mockToken,
+				CSAISymbol:  mockToken,
 				CUSDCSymbol: mockToken,
 				CWBTCSymbol: mockToken,
-				CZRXSymbol: mockToken,
+				CZRXSymbol:  mockToken,
 			},
 		},
 	}
@@ -109,15 +110,15 @@ func TestNewToken(t *testing.T) {
 		tokenName string
 	}
 	tests := []struct {
-		name    string
-		args    args
-		wants   want
+		name  string
+		args  args
+		wants want
 	}{
 		{
 			name: "Should create CBAT.",
 			args: args{
 				tokenSymbol: CBATSymbol,
-				ethClient: mockEthClient,
+				ethClient:   mockEthClient,
 			},
 			wants: want{
 				tokenType: "*contracts.CBAT",
@@ -128,7 +129,7 @@ func TestNewToken(t *testing.T) {
 			name: "Should create CDAI.",
 			args: args{
 				tokenSymbol: CDAISymbol,
-				ethClient: mockEthClient,
+				ethClient:   mockEthClient,
 			},
 			wants: want{
 				tokenType: "*contracts.CDAI",
@@ -139,7 +140,7 @@ func TestNewToken(t *testing.T) {
 			name: "Should create CETH.",
 			args: args{
 				tokenSymbol: CETHSymbol,
-				ethClient: mockEthClient,
+				ethClient:   mockEthClient,
 			},
 			wants: want{
 				tokenType: "*contracts.CETH",
@@ -150,7 +151,7 @@ func TestNewToken(t *testing.T) {
 			name: "Should create CREP.",
 			args: args{
 				tokenSymbol: CREPSymbol,
-				ethClient: mockEthClient,
+				ethClient:   mockEthClient,
 			},
 			wants: want{
 				tokenType: "*contracts.CREP",
@@ -161,7 +162,7 @@ func TestNewToken(t *testing.T) {
 			name: "Should create CSAI.",
 			args: args{
 				tokenSymbol: CSAISymbol,
-				ethClient: mockEthClient,
+				ethClient:   mockEthClient,
 			},
 			wants: want{
 				tokenType: "*contracts.CSAI",
@@ -172,7 +173,7 @@ func TestNewToken(t *testing.T) {
 			name: "Should create CUSDC.",
 			args: args{
 				tokenSymbol: CUSDCSymbol,
-				ethClient: mockEthClient,
+				ethClient:   mockEthClient,
 			},
 			wants: want{
 				tokenType: "*contracts.CUSDC",
@@ -183,7 +184,7 @@ func TestNewToken(t *testing.T) {
 			name: "Should create CWBTC.",
 			args: args{
 				tokenSymbol: CWBTCSymbol,
-				ethClient: mockEthClient,
+				ethClient:   mockEthClient,
 			},
 			wants: want{
 				tokenType: "*contracts.CWBTC",
@@ -194,7 +195,7 @@ func TestNewToken(t *testing.T) {
 			name: "Should create CZRX.",
 			args: args{
 				tokenSymbol: CZRXSymbol,
-				ethClient: mockEthClient,
+				ethClient:   mockEthClient,
 			},
 			wants: want{
 				tokenType: "*contracts.CZRX",
@@ -205,7 +206,7 @@ func TestNewToken(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := NewToken(tt.args.tokenSymbol, tt.args.ethClient)
-			if (err != nil) {
+			if err != nil {
 				t.Fatalf("NewToken() error = %v", err)
 			}
 			gotType := reflect.TypeOf(got)
@@ -213,11 +214,43 @@ func TestNewToken(t *testing.T) {
 				t.Errorf("gotType.String() = %v, want %v", gotType.String(), tt.wants.tokenType)
 			}
 			gotName, err := got.Name(nil)
-			if (err != nil) {
+			if err != nil {
 				t.Fatalf("got.Name(nil) error = %v", err)
 			}
 			if gotName != tt.wants.tokenName {
 				t.Errorf("got.Name(nil) = %v, want %v", gotName, tt.wants.tokenName)
+			}
+		})
+	}
+}
+
+func TestTokenContracts_GetAddresses(t *testing.T) {
+	type fields struct {
+		ethClient *ethclient.Client
+		tokens    map[string]Token
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   map[string]common.Address
+	}{
+		{
+			name: "Should get token addresses.",
+			fields: fields{
+				ethClient: nil,
+				tokens: nil,
+			},
+			want: tokenAddresses,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &TokenContracts{
+				ethClient: tt.fields.ethClient,
+				tokens:    tt.fields.tokens,
+			}
+			if got := c.GetAddresses(); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("TokenContracts.GetAddresses() = %v, want %v", got, tt.want)
 			}
 		})
 	}

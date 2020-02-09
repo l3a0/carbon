@@ -14,8 +14,8 @@ import (
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 
-	c "github.com/l3a0/carbon/contracts"
-	m "github.com/l3a0/carbon/models"
+	"github.com/l3a0/carbon/contracts"
+	"github.com/l3a0/carbon/models"
 )
 
 // Bot represents some logic that runs in background.
@@ -27,12 +27,13 @@ type Bot interface {
 
 // AccountsBot maintains state for accounts with debt.
 type AccountsBot struct {
-	accounts           map[string]*m.Account
-	tokens             map[string]c.Token
+	accounts           map[string]*models.Account
+	tokens             map[string]contracts.Token
 	tokenAddresses     map[string]common.Address
 	botsCollection     *mgo.Collection
 	accountsCollection *mgo.Collection
 	state              *BotState
+	logger             *log.Logger
 }
 
 // BotState represents the state of the bot.
@@ -45,13 +46,13 @@ type BotState struct {
 }
 
 // NewAccountsBot creates a new AccountsBot.
-// TODO: Refactor dependencies into interfaces.
-func NewAccountsBot(botsCollection *mgo.Collection, accountsCollection *mgo.Collection, tokensProvider c.TokensProvider) *AccountsBot {
+func NewAccountsBot(botsCollection *mgo.Collection, accountsCollection *mgo.Collection, tokensProvider contracts.TokensProvider, logger *log.Logger) *AccountsBot {
 	return &AccountsBot{
 		botsCollection:     botsCollection,
 		accountsCollection: accountsCollection,
 		tokens:             tokensProvider.GetTokens(),
 		tokenAddresses:     tokensProvider.GetAddresses(),
+		logger:             logger,
 	}
 }
 
@@ -73,19 +74,19 @@ func (bot *AccountsBot) insertState(state *BotState) {
 	state.LastWakeTime = time.Now()
 	// An operation that may fail.
 	operation := func() error {
-		log.Printf("Inserting AccountsBot state: %v\n", state)
+		bot.logger.Printf("Inserting AccountsBot state: %v\n", state)
 		err := bot.botsCollection.Insert(state)
 		if err != nil {
-			log.Printf("Problem inserting data: %T %v %v", err, err, err.(*mgo.LastError))
+			bot.logger.Printf("Problem inserting data: %T %v %v", err, err, err.(*mgo.LastError))
 			return err
 		}
 		return nil
 	}
 	err := backoff.Retry(operation, backoff.NewExponentialBackOff())
 	if err != nil {
-		log.Fatalf("Error updating record: %T %v", err, err)
+		bot.logger.Fatalf("Error updating record: %T %v", err, err)
 	}
-	log.Printf("Inserted AccountsBot: %v\n", state)
+	bot.logger.Printf("Inserted AccountsBot: %v\n", state)
 }
 
 func (bot *AccountsBot) initializeState() {
@@ -94,7 +95,7 @@ func (bot *AccountsBot) initializeState() {
 	state := BotState{}
 	err := bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state)
 	if err != nil {
-		log.Printf("Could not find existing bot state: %v\n", err)
+		bot.logger.Printf("Could not find existing bot state: %v\n", err)
 		bot.insertState(&state)
 	} else {
 		state.LastWakeTime = time.Now()
@@ -102,52 +103,52 @@ func (bot *AccountsBot) initializeState() {
 		change := bson.M{"$set": bson.M{"lastwaketime": state.LastWakeTime}}
 		// An operation that may fail.
 		operation := func() error {
-			log.Printf("Updating AccountsBot: %v\n", state)
+			bot.logger.Printf("Updating AccountsBot: %v\n", state)
 			err = bot.botsCollection.Update(updateQuery, change)
 			if err != nil {
-				log.Printf("Error updating record: %T %v %v", err, err, err.(*mgo.LastError))
+				bot.logger.Printf("Error updating record: %T %v %v", err, err, err.(*mgo.LastError))
 				return err
 			}
 			return nil
 		}
 		err = backoff.Retry(operation, backoff.NewExponentialBackOff())
 		if err != nil {
-			log.Fatalf("Error updating record: %T %v %v", err, err, err.(*mgo.LastError))
+			bot.logger.Fatalf("Error updating record: %T %v %v", err, err, err.(*mgo.LastError))
 		}
-		log.Printf("Updated AccountsBot: %v\n", state)
+		bot.logger.Printf("Updated AccountsBot: %v\n", state)
 	}
 	bot.state = &state
-	log.Printf("Initialized state for %v\n", bot)
+	bot.logger.Printf("Initialized state for %v\n", bot)
 }
 
 func (bot *AccountsBot) initializeAccounts() {
 	// restore accounts from db.
-	log.Printf("Initializing accounts for %v.\n", bot)
-	bot.accounts = make(map[string]*m.Account)
-	var accounts []*m.Account
+	bot.logger.Printf("Initializing accounts for %v.\n", bot)
+	bot.accounts = make(map[string]*models.Account)
+	var accounts []*models.Account
 	err := bot.accountsCollection.Find(nil).All(&accounts)
 	if err != nil {
-		log.Fatalf("Error finding accounts: %v\n", err)
+		bot.logger.Fatalf("Error finding accounts: %v\n", err)
 	}
 	for _, account := range accounts {
 		bot.accounts[account.Address] = account
 	}
-	log.Printf("Initialized %v accounts for %v.\n", len(bot.accounts), bot)
+	bot.logger.Printf("Initialized %v accounts for %v.\n", len(bot.accounts), bot)
 }
 
 // Wake gets the bot ready for work.
 func (bot *AccountsBot) Wake(statusChannel chan int) {
-	log.Printf("%v waking...\n", bot)
+	bot.logger.Printf("%v waking...\n", bot)
 	bot.initializeState()
 	bot.initializeAccounts()
 	statusChannel <- 0
 }
 
-func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string, token c.Token) c.TokenBorrowIterator {
+func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string, token contracts.Token) contracts.TokenBorrowIterator {
 	log.Printf("Processing accounts for token %v (%v) at block # %v @ %v\n", tokenName, tokenSymbol, bot.state.LastBorrowBlockByToken[tokenSymbol], bot.tokenAddresses[tokenSymbol].Hex())
 	// +1 => exclude the last borrow block.
 	filterOptions := &bind.FilterOpts{Start: bot.state.LastBorrowBlockByToken[tokenSymbol], End: nil, Context: nil}
-	var iter c.TokenBorrowIterator
+	var iter contracts.TokenBorrowIterator
 	var err error
 	// An operation that may fail.
 	operation := func() error {
@@ -169,7 +170,7 @@ func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string,
 func (bot *AccountsBot) Work(status chan int) {
 	log.Printf("%v working...\n", bot)
 	// TODO: go routine per token contract?
-	modifiedAccounts := []*m.Account{}
+	modifiedAccounts := []*models.Account{}
 	for tokenSymbol, token := range bot.tokens {
 		tokenName, err := token.Name(nil)
 		if err != nil {
@@ -214,23 +215,23 @@ func (bot *AccountsBot) Work(status chan int) {
 
 // Sleep saves the bot's state and lets it rest.
 func (bot *AccountsBot) Sleep(statusChannel chan int) {
-	log.Printf("%v sleeping...\n", bot)
+	bot.logger.Printf("%v sleeping...\n", bot)
 	bot.state.LastSleepTime = time.Now()
 	updateQuery := bson.M{"_id": bot.state.ID}
 	change := bson.M{"$set": bson.M{"lastsleeptime": bot.state.LastSleepTime, "lastborrowblockbytoken": bot.state.LastBorrowBlockByToken}}
-	log.Printf("Updating AccountsBot: %v\n", bot.state)
+	bot.logger.Printf("Updating AccountsBot: %v\n", bot.state)
 	err := bot.botsCollection.Update(updateQuery, change)
 	if err != nil {
-		log.Fatalf("Error updating record: %T %v", err, err)
+		bot.logger.Fatalf("Error updating record: %T %v", err, err)
 	}
-	log.Printf("Updated AccountsBot: %v\n", bot.state)
+	bot.logger.Printf("Updated AccountsBot: %v\n", bot.state)
 	statusChannel <- 0
 }
 
-func (bot *AccountsBot) parseAccounts(iter c.TokenBorrowIterator, tokenSymbol string) (uint64, []*m.Account) {
+func (bot *AccountsBot) parseAccounts(iter contracts.TokenBorrowIterator, tokenSymbol string) (uint64, []*models.Account) {
 	log.Printf("Parsing accounts...\n")
 	var lastBlock uint64 = 0
-	modifiedAccounts := map[string]*m.Account{}
+	modifiedAccounts := map[string]*models.Account{}
 	for i := 0; iter.Next(); i++ {
 		borrowEvent := iter.GetEvent()
 		if borrowEvent != nil {
@@ -239,7 +240,7 @@ func (bot *AccountsBot) parseAccounts(iter c.TokenBorrowIterator, tokenSymbol st
 			borrows := borrowEvent.GetAccountBorrows()
 			account, ok := bot.accounts[address]
 			if !ok && borrows.Cmp(big.NewInt(0)) == 1 {
-				account = &m.Account{
+				account = &models.Account{
 					ID:      bson.NewObjectId(),
 					Address: address,
 					Borrows: make(map[string]*big.Int),
@@ -270,7 +271,7 @@ func (bot *AccountsBot) parseAccounts(iter c.TokenBorrowIterator, tokenSymbol st
 			}
 		}
 	}
-	result := []*m.Account{}
+	result := []*models.Account{}
 	for _, account := range modifiedAccounts {
 		result = append(result, account)
 	}
