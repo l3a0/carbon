@@ -168,13 +168,13 @@ func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string,
 
 // Work puts the bot to work.
 func (bot *AccountsBot) Work(status chan int) {
-	log.Printf("%v working...\n", bot)
+	bot.logger.Printf("%v working...\n", bot)
 	// TODO: go routine per token contract?
 	modifiedAccounts := []*models.Account{}
 	for tokenSymbol, token := range bot.tokens {
 		tokenName, err := token.Name(nil)
 		if err != nil {
-			log.Fatalf("Failed to retrieve %v token name: %v", tokenSymbol, err)
+			bot.logger.Fatalf("Failed to retrieve %v token name: %v", tokenSymbol, err)
 		}
 		iter := bot.filterBorrowEvents(tokenSymbol, tokenName, token)
 		if iter != nil {
@@ -189,24 +189,24 @@ func (bot *AccountsBot) Work(status chan int) {
 		}
 	}
 	numberOfModifiedAccounts := len(modifiedAccounts)
-	log.Printf("numberOfModifiedAccounts: %v\n", numberOfModifiedAccounts)
+	bot.logger.Printf("numberOfModifiedAccounts: %v\n", numberOfModifiedAccounts)
 	numberOfAccounts := len(bot.accounts)
-	log.Printf("numberOfAccounts: %v\n", numberOfAccounts)
+	bot.logger.Printf("numberOfAccounts: %v\n", numberOfAccounts)
 	if numberOfAccounts > 0 {
 		for _, account := range modifiedAccounts {
 			operation := func() error {
 				fmt.Printf("Upserting account: %v\n", account)
 				_, err := bot.accountsCollection.Upsert(bson.M{"_id": account.ID}, account)
 				if err != nil {
-					log.Printf("Problem upserting data: %T %v %v", err, err, err.(*mgo.LastError))
+					bot.logger.Printf("Problem upserting data: %T %v %v", err, err, err.(*mgo.LastError))
 					return err
 				}
-				log.Printf("Upserted account: %v\n", account)
+				bot.logger.Printf("Upserted account: %v\n", account)
 				return nil
 			}
 			err := backoff.Retry(operation, backoff.NewExponentialBackOff())
 			if err != nil {
-				log.Fatalf("Problem upserting data: %T %v %v", err, err, err.(*mgo.LastError))
+				bot.logger.Fatalf("Problem upserting data: %T %v %v", err, err, err.(*mgo.LastError))
 			}
 		}
 	}
@@ -229,7 +229,7 @@ func (bot *AccountsBot) Sleep(statusChannel chan int) {
 }
 
 func (bot *AccountsBot) parseAccounts(iter contracts.TokenBorrowIterator, tokenSymbol string) (uint64, []*models.Account) {
-	log.Printf("Parsing accounts...\n")
+	bot.logger.Printf("Parsing accounts...\n")
 	var lastBlock uint64 = 0
 	modifiedAccounts := map[string]*models.Account{}
 	for i := 0; iter.Next(); i++ {
@@ -266,7 +266,7 @@ func (bot *AccountsBot) parseAccounts(iter contracts.TokenBorrowIterator, tokenS
 					delete(bot.accounts, address)
 					// TODO: enable deleting from cosmos db.
 					// modifiedAccounts = append(modifiedAccounts, account)
-					log.Printf("Deleted account: %#v. Balance: %#v (%#v)\n", account.Address, borrows, tokenSymbol)
+					bot.logger.Printf("Deleted account: %#v. Balance: %#v (%#v)\n", account.Address, borrows, tokenSymbol)
 				}
 			}
 		}
