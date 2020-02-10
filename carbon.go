@@ -1,11 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"log"
 	"net"
 	"time"
+	"os"
 
 	"github.com/ethereum/go-ethereum/ethclient"
 
@@ -45,13 +45,12 @@ func main() {
 	defer dbSession.Close()
 	botsCollection := dbSession.DB("bao-blockchain").C("bots")
 	accountsCollection := dbSession.DB("bao-blockchain").C("accounts")
-	tokenContracts, err := contracts.NewTokenContracts(ethClient, contracts.NewToken)
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+	var accountsBot accountsbot.Bot
+	tokenContracts, err := contracts.NewTokenContracts(ethClient, logger, contracts.NewToken)
 	if err != nil {
 		log.Fatal(err)
 	}
-	var buf bytes.Buffer
-	logger := log.New(&buf, "", 0)
-	var accountsBot accountsbot.Bot
 	accountsBot = accountsbot.NewAccountsBot(botsCollection, accountsCollection, tokenContracts, logger)
 	status := make(chan int)
 	go accountsBot.Wake(status)

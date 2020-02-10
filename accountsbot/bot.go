@@ -145,7 +145,7 @@ func (bot *AccountsBot) Wake(statusChannel chan int) {
 }
 
 func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string, token contracts.Token) contracts.TokenBorrowIterator {
-	log.Printf("Processing accounts for token %v (%v) at block # %v @ %v\n", tokenName, tokenSymbol, bot.state.LastBorrowBlockByToken[tokenSymbol], bot.tokenAddresses[tokenSymbol].Hex())
+	bot.logger.Printf("Processing accounts for token %v (%v) at block # %v @ %v\n", tokenName, tokenSymbol, bot.state.LastBorrowBlockByToken[tokenSymbol], bot.tokenAddresses[tokenSymbol].Hex())
 	// +1 => exclude the last borrow block.
 	filterOptions := &bind.FilterOpts{Start: bot.state.LastBorrowBlockByToken[tokenSymbol], End: nil, Context: nil}
 	var iter contracts.TokenBorrowIterator
@@ -154,14 +154,14 @@ func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string,
 	operation := func() error {
 		iter, err = token.FilterBorrowEvents(filterOptions)
 		if err != nil {
-			log.Printf("Failed to FilterBorrowEvents for token %v: %v", tokenSymbol, err)
+			bot.logger.Printf("Failed to FilterBorrowEvents for token %v: %v", tokenSymbol, err)
 			return err
 		}
 		return nil
 	}
 	err = backoff.Retry(operation, backoff.NewExponentialBackOff())
 	if err != nil {
-		log.Fatalf("Failed to FilterBorrowEvents for token %v: %v", tokenSymbol, err)
+		bot.logger.Fatalf("Failed to FilterBorrowEvents for token %v: %v", tokenSymbol, err)
 	}
 	return iter
 }
@@ -170,7 +170,7 @@ func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string,
 func (bot *AccountsBot) Work(status chan int) {
 	bot.logger.Printf("%v working...\n", bot)
 	// TODO: go routine per token contract?
-	modifiedAccounts := []*models.Account{}
+	modifiedAccounts := map[string]*models.Account{}
 	for tokenSymbol, token := range bot.tokens {
 		tokenName, err := token.Name(nil)
 		if err != nil {
@@ -181,8 +181,7 @@ func (bot *AccountsBot) Work(status chan int) {
 			if bot.state.LastBorrowBlockByToken == nil {
 				bot.state.LastBorrowBlockByToken = make(map[string]uint64)
 			}
-			block, accounts := bot.parseAccounts(iter, tokenSymbol)
-			modifiedAccounts = append(modifiedAccounts, accounts...)
+			block := bot.parseAccounts(iter, tokenSymbol, modifiedAccounts)
 			if block > bot.state.LastBorrowBlockByToken[tokenSymbol] {
 				bot.state.LastBorrowBlockByToken[tokenSymbol] = block
 			}
@@ -192,10 +191,24 @@ func (bot *AccountsBot) Work(status chan int) {
 	bot.logger.Printf("numberOfModifiedAccounts: %v\n", numberOfModifiedAccounts)
 	numberOfAccounts := len(bot.accounts)
 	bot.logger.Printf("numberOfAccounts: %v\n", numberOfAccounts)
+	// Assert the invariant: number of modified accounts is not greater than the total number of accounts.
+	if numberOfModifiedAccounts > numberOfAccounts {
+		bot.logger.Panicf("numberOfModifiedAccounts > numberOfAccounts.\n")
+	}
+	// Assert the invariant: no account has zero total borrows across all tokens.
+	for _, account := range bot.accounts {
+		totalBorrows := big.NewInt(0)
+		for _, tokenBorrows := range account.Borrows {
+			totalBorrows = totalBorrows.Add(totalBorrows, tokenBorrows)
+		}
+		if totalBorrows.Cmp(common.Big0) <= 0 {
+			bot.logger.Panicf("Account %v has totalBorrows = %v.\n", account, totalBorrows)
+		}
+	}
 	if numberOfAccounts > 0 {
 		for _, account := range modifiedAccounts {
 			operation := func() error {
-				fmt.Printf("Upserting account: %v\n", account)
+				bot.logger.Printf("Upserting account: %v\n", account)
 				_, err := bot.accountsCollection.Upsert(bson.M{"_id": account.ID}, account)
 				if err != nil {
 					bot.logger.Printf("Problem upserting data: %T %v %v", err, err, err.(*mgo.LastError))
@@ -228,31 +241,30 @@ func (bot *AccountsBot) Sleep(statusChannel chan int) {
 	statusChannel <- 0
 }
 
-func (bot *AccountsBot) parseAccounts(iter contracts.TokenBorrowIterator, tokenSymbol string) (uint64, []*models.Account) {
+func (bot *AccountsBot) parseAccounts(iter contracts.TokenBorrowIterator, tokenSymbol string, modifiedAccounts map[string]*models.Account) uint64 {
 	bot.logger.Printf("Parsing accounts...\n")
 	var lastBlock uint64 = 0
-	modifiedAccounts := map[string]*models.Account{}
 	for i := 0; iter.Next(); i++ {
 		borrowEvent := iter.GetEvent()
 		if borrowEvent != nil {
 			lastBlock = borrowEvent.GetBlockNumber()
-			address := borrowEvent.GetBorrower().Hex()
+			addressHex := borrowEvent.GetBorrower().Hex()
 			borrows := borrowEvent.GetAccountBorrows()
-			account, ok := bot.accounts[address]
+			account, ok := bot.accounts[addressHex]
 			if !ok && borrows.Cmp(big.NewInt(0)) == 1 {
 				account = &models.Account{
 					ID:      bson.NewObjectId(),
-					Address: address,
+					Address: addressHex,
 					Borrows: make(map[string]*big.Int),
 				}
 				account.Borrows[tokenSymbol] = borrows
 				bot.accounts[account.Address] = account
 				modifiedAccounts[account.Address] = account
-				// fmt.Printf("Added account: %#v. Borrowed %#v (%#v)\n", account.address, account.borrows[tokenSymbol], tokenSymbol)
+				bot.logger.Printf("Added account: %#v. Borrowed %#v (%#v)\n", account.Address, account.Borrows[tokenSymbol], tokenSymbol)
 			} else if ok && borrows.Cmp(big.NewInt(0)) == 1 {
 				account.Borrows[tokenSymbol] = borrows
 				modifiedAccounts[account.Address] = account
-				// fmt.Printf("Updated account: %#v. Borrowed %#v (%#v)\n", account.address, account.borrows[tokenSymbol], tokenSymbol)
+				bot.logger.Printf("Updated account: %#v. Borrowed %#v (%#v)\n", account.Address, account.Borrows[tokenSymbol], tokenSymbol)
 			} else if ok && borrows.Cmp(big.NewInt(0)) < 1 {
 				account.Borrows[tokenSymbol] = borrows
 				// check if all token borrows for the account are 0.
@@ -263,17 +275,13 @@ func (bot *AccountsBot) parseAccounts(iter contracts.TokenBorrowIterator, tokenS
 					}
 				}
 				if accountEmpty {
-					delete(bot.accounts, address)
+					delete(bot.accounts, addressHex)
 					// TODO: enable deleting from cosmos db.
-					// modifiedAccounts = append(modifiedAccounts, account)
+					modifiedAccounts[account.Address] = nil
 					bot.logger.Printf("Deleted account: %#v. Balance: %#v (%#v)\n", account.Address, borrows, tokenSymbol)
 				}
 			}
 		}
 	}
-	result := []*models.Account{}
-	for _, account := range modifiedAccounts {
-		result = append(result, account)
-	}
-	return lastBlock, result
+	return lastBlock
 }

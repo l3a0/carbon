@@ -1,8 +1,10 @@
 package contracts
 
 import (
+	"log"
 	"reflect"
 	"testing"
+	"bytes"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -12,6 +14,12 @@ func TestNewTokenContracts(t *testing.T) {
 	// Arrange
 	// mockEthClient, _ := ethclient.Dial("https://mainnet.infura.io")
 	mockEthClient, _ := ethclient.Dial("/home/l3a0/.ethereum/geth.ipc")
+	var mockToken Token = &MockToken{}
+	tokenFactory := func(tokenSymbol string, ethClient *ethclient.Client, logger *log.Logger) (Token, error) {
+		return mockToken, nil
+	}
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
 	type args struct {
 		ethClient *ethclient.Client
 	}
@@ -33,7 +41,7 @@ func TestNewTokenContracts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Act
-			got, err := NewTokenContracts(tt.args.ethClient, MockNewToken)
+			got, err := NewTokenContracts(tt.args.ethClient, logger, tokenFactory)
 			// Assert
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewTokenContracts() error = %v, wantErr %v", err, tt.wantErr)
@@ -54,12 +62,11 @@ func TestTokenContracts_GetTokens(t *testing.T) {
 		ethClient *ethclient.Client
 	}
 	mockToken := &MockToken{}
-	tokenFactory := func(tokenSymbol string, ethClient *ethclient.Client) (Token, error) {
-		var token Token = mockToken
-		var err error = nil
-
-		return token, err
+	tokenFactory := func(tokenSymbol string, ethClient *ethclient.Client, logger *log.Logger) (Token, error) {
+		return mockToken, nil
 	}
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
 	tests := []struct {
 		name   string
 		fields fields
@@ -84,7 +91,7 @@ func TestTokenContracts_GetTokens(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tokenContracts, err := NewTokenContracts(tt.fields.ethClient, tokenFactory)
+			tokenContracts, err := NewTokenContracts(tt.fields.ethClient, logger, tokenFactory)
 			if err != nil {
 				t.Errorf("NewTokenContracts() error = %v", err)
 				return
@@ -101,6 +108,8 @@ func TestTokenContracts_GetTokens(t *testing.T) {
 func TestNewToken(t *testing.T) {
 	// mockEthClient, _ := ethclient.Dial("https://mainnet.infura.io")
 	mockEthClient, _ := ethclient.Dial("/home/l3a0/.ethereum/geth.ipc")
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
 	type args struct {
 		tokenSymbol string
 		ethClient   *ethclient.Client
@@ -205,7 +214,7 @@ func TestNewToken(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NewToken(tt.args.tokenSymbol, tt.args.ethClient)
+			got, err := NewToken(tt.args.tokenSymbol, tt.args.ethClient, logger)
 			if err != nil {
 				t.Fatalf("NewToken() error = %v", err)
 			}

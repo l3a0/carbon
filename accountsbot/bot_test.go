@@ -5,20 +5,17 @@ import (
 	"crypto/tls"
 	"log"
 	"net"
+	"regexp"
 	"testing"
 	"time"
-	"regexp"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/l3a0/carbon/contracts"
 	"gopkg.in/mgo.v2"
 )
 
-func TestAccountsBot_Wake(t *testing.T) {
-	// Arrange
-	tokensProvider := &contracts.MockTokenContracts{}
-	database := "bao-blockchain"
-	username := "bao-blockchain"
-	password := ""
+func setupDbSession(database string, username string, password string) (*mgo.Session, error) {
 	// DialInfo holds options for establishing a session with Azure Cosmos DB for MongoDB API account.
 	dialInfo := &mgo.DialInfo{
 		Addrs:    []string{"bao-blockchain.mongo.cosmos.azure.com:10255"}, // Get HOST + PORT
@@ -31,15 +28,56 @@ func TestAccountsBot_Wake(t *testing.T) {
 		},
 	}
 	// Create a session which maintains a pool of socket connections
-	dbSession, err := mgo.DialWithInfo(dialInfo)
-	if err != nil {
-		t.Fatalf("Can't connect to cosmos db: %#v\n", err)
-	}
-	// t.Logf("Conntected to cosmos db: %#v\n", dbSession)
-	defer dbSession.Close()
+	return mgo.DialWithInfo(dialInfo)
+}
+
+func setupDbCollections(database string, dbSession *mgo.Session) (*mgo.Collection, *mgo.Collection) {
 	botsCollection := dbSession.DB(database).C("bots-test")
 	accountsCollection := dbSession.DB(database).C("accounts-test")
 	botsCollection.DropCollection()
+	accountsCollection.DropCollection()
+	return botsCollection, accountsCollection
+}
+
+func TestAccountsBot_Wake(t *testing.T) {
+	// Arrange
+	database := "bao-blockchain"
+	username := "bao-blockchain"
+	password := ""
+	dbSession, err := setupDbSession(database, username, password)
+	if err != nil {
+		t.Fatalf("Can't connect to cosmos db: %#v\n", err)
+	}
+	defer dbSession.Close()
+	botsCollection, accountsCollection := setupDbCollections(database, dbSession)
+	borrowEvents := []contracts.TokenBorrow{
+		&contracts.CUSDCBorrow{
+			Borrower: common.Address{},
+			BorrowAmount: common.Big0,
+			AccountBorrows: common.Big1,
+			TotalBorrows: common.Big0,
+			Raw: types.Log{},
+		},
+	}
+	fakeTokenBorrowIterator := &contracts.MockTokenBorrowIterator{
+		BorrowEvents: borrowEvents,
+	}
+	fakeTokenBorrowIterator2 := &contracts.MockTokenBorrowIterator{
+		BorrowEvents: borrowEvents,
+	}
+	fakeToken := &contracts.MockToken{
+		TokenBorrowIterator: fakeTokenBorrowIterator,
+	}
+	fakeToken2 := &contracts.MockToken{
+		TokenBorrowIterator: fakeTokenBorrowIterator2,
+	}
+	fakeContracts := map[string]contracts.Token{
+		contracts.CUSDCSymbol: fakeToken,
+		contracts.CBATSymbol: fakeToken2,
+	}
+	tokensProvider := &contracts.MockTokenContracts{
+		Contracts: fakeContracts,
+	}
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
 	type fields struct {
@@ -100,22 +138,22 @@ func TestAccountsBot_Wake(t *testing.T) {
 			output, _ = buf.ReadString('\n')
 			re := regexp.MustCompile(`Inserting AccountsBot state: {"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":null}`)
 			if !re.MatchString(output) {
-				t.Errorf("re.MatchString(output) = %v, want %v", re.MatchString(output), true)
+				t.Errorf("output, _ = buf.ReadString('\n') = %v, want %v", output, `Inserting AccountsBot state: {"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":null}`)
 			}
 			output, _ = buf.ReadString('\n')
 			re = regexp.MustCompile(`Inserted AccountsBot: {"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":null}`)
 			if !re.MatchString(output) {
-				t.Errorf("re.MatchString(output) = %v, want %v", re.MatchString(output), true)
+				t.Errorf("output, _ = buf.ReadString('\n') = %v, want %v", output, `Inserted AccountsBot: {"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":null}`)
 			}
 			output, _ = buf.ReadString('\n')
 			re = regexp.MustCompile(`Initialized state for AccountsBot{{"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":null}}`)
 			if !re.MatchString(output) {
-				t.Errorf("re.MatchString(output) = %v, want %v", re.MatchString(output), true)
+				t.Errorf("output, _ = buf.ReadString('\n') = %v, want %v", output, `Initialized state for AccountsBot{{"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":{}}}`)
 			}
 			output, _ = buf.ReadString('\n')
 			re = regexp.MustCompile(`Initializing accounts for AccountsBot{{"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":null}}`)
 			if !re.MatchString(output) {
-				t.Errorf("re.MatchString(output) = %v, want %v", re.MatchString(output), true)
+				t.Errorf("output, _ = buf.ReadString('\n') = %v, want %v", output, `Initializing accounts for AccountsBot{{"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":null}}`)
 			}
 			output, _ = buf.ReadString('\n')
 			re = regexp.MustCompile(`Initialized 0 accounts for AccountsBot{{"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":null}}`)
@@ -128,35 +166,76 @@ func TestAccountsBot_Wake(t *testing.T) {
 				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Initialized 0 accounts for AccountsBot{{"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":null}}`)
 			}
 			output, _ = buf.ReadString('\n')
-			re = regexp.MustCompile(`numberOfModifiedAccounts: 0`)
+			re = regexp.MustCompile(`Processing accounts for token MockToken \([A-Z]+\) at block # 0 @ 0x0000000000000000000000000000000000000000`)
 			if !re.MatchString(output) {
-				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `numberOfModifiedAccounts: 0`)
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Processing accounts for token MockToken (*) at block # 0 @ 0x0000000000000000000000000000000000000000`)
 			}
 			output, _ = buf.ReadString('\n')
-			re = regexp.MustCompile(`numberOfAccounts: 0`)
+			re = regexp.MustCompile(`Parsing accounts...`)
 			if !re.MatchString(output) {
-				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `numberOfAccounts: 0`)
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Parsing accounts...`)
 			}
 			output, _ = buf.ReadString('\n')
-			re = regexp.MustCompile(`AccountsBot{{"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":null}} sleeping...`)
+			re = regexp.MustCompile(`Added account: "0x0000000000000000000000000000000000000000". Borrowed 1 \("[A-Z]+"\)`)
 			if !re.MatchString(output) {
-				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `AccountsBot{{"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":null}} sleeping...`)
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Added account: "0x0000000000000000000000000000000000000000". Borrowed 1 ("*")`)
 			}
 			output, _ = buf.ReadString('\n')
-			re = regexp.MustCompile(`Updating AccountsBot: {"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":null}`)
+			re = regexp.MustCompile(`Processing accounts for token MockToken \([A-Z]+\) at block # 0 @ 0x0000000000000000000000000000000000000000`)
 			if !re.MatchString(output) {
-				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Updating AccountsBot: {"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":null}`)
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Processing accounts for token MockToken (*) at block # 0 @ 0x0000000000000000000000000000000000000000`)
 			}
 			output, _ = buf.ReadString('\n')
-			re = regexp.MustCompile(`Updated AccountsBot: {"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":null}`)
+			re = regexp.MustCompile(`Parsing accounts...`)
 			if !re.MatchString(output) {
-				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Updated AccountsBot: {"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":null}`)
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Parsing accounts...`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`Updated account: "0x0000000000000000000000000000000000000000". Borrowed 1 \("[A-Z]+"\)`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Updated account: "0x0000000000000000000000000000000000000000". Borrowed 1 ("*")`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`numberOfModifiedAccounts: 1`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `numberOfModifiedAccounts: 1`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`numberOfAccounts: 1`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `numberOfAccounts: 1`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`Upserting account: &{ObjectIdHex\("[a-f\d]{24}"\) 0x0000000000000000000000000000000000000000 map\[CBAT:1 CUSDC:1\]}`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Upserting account: &{ObjectIdHex("*") 0x0000000000000000000000000000000000000000 map[CBAT:1 CUSDC:1]}`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`Upserted account: &{ObjectIdHex\("[a-f\d]{24}"\) 0x0000000000000000000000000000000000000000 map\[CBAT:1 CUSDC:1\]}`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Upserted account: &{ObjectIdHex("*") 0x0000000000000000000000000000000000000000 map[CBAT:1 CUSDC:1]}`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`AccountsBot{{"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":{}}} sleeping...`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `AccountsBot{{"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":{}}} sleeping...`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`Updating AccountsBot: {"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":{}}`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Updating AccountsBot: {"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":{}}`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`Updated AccountsBot: {"ID":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":{}}`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Updated AccountsBot: {"ID":"*","BotType":"AccountsBot","LastWakeTime":"*","LastSleepTime":"*","LastBorrowBlockByToken":{}}`)
 			}
 			output, _ = buf.ReadString('\n')
 			if output != "" {
 				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, "")
 			}
 			botsCollection.DropCollection()
+			accountsCollection.DropCollection()
 		})
 	}
 }
