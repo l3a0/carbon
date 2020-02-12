@@ -93,7 +93,18 @@ func (bot *AccountsBot) initializeState() {
 	// restore state for accounts bot.
 	// query the db for bot with bottype == AccountsBot.
 	state := BotState{}
-	err := bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state)
+	// err := bot.botsCollection.Find(nil).One(&state)
+	var err error
+	err = bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state)
+	// operation := func() error {
+	// 	return bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state)
+	// 	// if err != nil {
+	// 	// 	// bot.logger.Printf(`bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state) error = %v`, err)
+	// 	// 	return err
+	// 	// }
+	// 	// return nil
+	// }
+	// err = backoff.Retry(operation, backoff.NewExponentialBackOff())
 	if err != nil {
 		bot.logger.Printf("Could not find existing bot state: %v\n", err)
 		bot.insertState(&state)
@@ -181,16 +192,11 @@ func (bot *AccountsBot) Work(status chan int) {
 			if bot.state.LastBorrowBlockByToken == nil {
 				bot.state.LastBorrowBlockByToken = make(map[string]uint64)
 			}
-			block := bot.parseAccounts(iter, tokenSymbol, modifiedAccounts)
-			if block > bot.state.LastBorrowBlockByToken[tokenSymbol] {
-				bot.state.LastBorrowBlockByToken[tokenSymbol] = block
-			}
+			bot.state.LastBorrowBlockByToken[tokenSymbol] = bot.parseAccounts(iter, tokenSymbol, modifiedAccounts)
 		}
 	}
 	numberOfModifiedAccounts := len(modifiedAccounts)
-	bot.logger.Printf("numberOfModifiedAccounts: %v\n", numberOfModifiedAccounts)
 	numberOfAccounts := len(bot.accounts)
-	bot.logger.Printf("numberOfAccounts: %v\n", numberOfAccounts)
 	// Assert the invariant: number of modified accounts is not greater than the total number of accounts.
 	if numberOfModifiedAccounts > numberOfAccounts {
 		bot.logger.Panicf("numberOfModifiedAccounts > numberOfAccounts.\n")
@@ -223,6 +229,8 @@ func (bot *AccountsBot) Work(status chan int) {
 			}
 		}
 	}
+	bot.logger.Printf("numberOfModifiedAccounts: %v\n", numberOfModifiedAccounts)
+	bot.logger.Printf("numberOfAccounts: %v\n", numberOfAccounts)
 	status <- 0
 }
 
@@ -233,11 +241,19 @@ func (bot *AccountsBot) Sleep(statusChannel chan int) {
 	updateQuery := bson.M{"_id": bot.state.ID}
 	change := bson.M{"$set": bson.M{"lastsleeptime": bot.state.LastSleepTime, "lastborrowblockbytoken": bot.state.LastBorrowBlockByToken}}
 	bot.logger.Printf("Updating AccountsBot: %v\n", bot.state)
-	err := bot.botsCollection.Update(updateQuery, change)
-	if err != nil {
-		bot.logger.Fatalf("Error updating record: %T %v", err, err)
+	operation := func() error {
+		err := bot.botsCollection.Update(updateQuery, change)
+		if err != nil {
+			bot.logger.Printf("Error updating record: %T %v", err, err)
+			return err
+		}
+		bot.logger.Printf("Updated AccountsBot: %v\n", bot.state)
+		return nil
 	}
-	bot.logger.Printf("Updated AccountsBot: %v\n", bot.state)
+	err := backoff.Retry(operation, backoff.NewExponentialBackOff())
+	if err != nil {
+		bot.logger.Panicf("Error updating record: %T %v", err, err)
+	}
 	statusChannel <- 0
 }
 
