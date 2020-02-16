@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/globalsign/mgo/bson"
 	"github.com/l3a0/carbon/contracts"
-	"gopkg.in/mgo.v2/bson"
 )
 
 func TestAccount_GetBSON(t *testing.T) {
@@ -62,9 +62,9 @@ func TestAccount_GetBSON(t *testing.T) {
 func TestAccount_SetBSON(t *testing.T) {
 	// Arrange
 	type fields struct {
-		ID      bson.ObjectId
-		Address string
-		Borrows map[string]*big.Int
+		ID            bson.ObjectId
+		Address       string
+		Borrows       map[string]*big.Int
 		StringBorrows map[string]string
 	}
 	type args struct {
@@ -78,7 +78,7 @@ func TestAccount_SetBSON(t *testing.T) {
 		{
 			name: "Should set BSON.",
 			fields: fields{
-				ID: bson.NewObjectId(),
+				ID:      bson.NewObjectId(),
 				Address: "FakeAddress",
 				Borrows: map[string]*big.Int{
 					contracts.CUSDCSymbol: big.NewInt(1000000000000),

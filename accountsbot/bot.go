@@ -10,9 +10,9 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
 	"gopkg.in/cenkalti/backoff.v2"
-	"gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
 
 	"github.com/l3a0/carbon/contracts"
 	"github.com/l3a0/carbon/models"
@@ -25,20 +25,28 @@ type Bot interface {
 	Sleep(statusChannel chan int)
 }
 
+// AccountsService is responsible for CRUD on account data.
+type AccountsService interface {
+}
+
+// BotsService is responsible for CRUD on bot data.
+type BotsService interface {
+}
+
 // AccountsBot maintains state for accounts with debt.
 type AccountsBot struct {
 	accounts           map[string]*models.Account
 	tokens             map[string]contracts.Token
 	tokenAddresses     map[string]common.Address
-	botsCollection     *mgo.Collection
-	accountsCollection *mgo.Collection
+	botsCollection     models.Collection
+	accountsCollection models.Collection
 	state              *BotState
 	logger             *log.Logger
 }
 
 // BotState represents the state of the bot.
 type BotState struct {
-	ID                     bson.ObjectId `bson:"_id,omitempty"`
+	ShardKey               string
 	BotType                string
 	LastWakeTime           time.Time
 	LastSleepTime          time.Time
@@ -46,7 +54,13 @@ type BotState struct {
 }
 
 // NewAccountsBot creates a new AccountsBot.
-func NewAccountsBot(botsCollection *mgo.Collection, accountsCollection *mgo.Collection, tokensProvider contracts.TokensProvider, logger *log.Logger) *AccountsBot {
+func NewAccountsBot(
+	botsCollection models.Collection,
+	accountsCollection models.Collection,
+	tokensProvider contracts.TokensProvider,
+	logger *log.Logger,
+	accountsService AccountsService,
+	botsService BotsService) *AccountsBot {
 	return &AccountsBot{
 		botsCollection:     botsCollection,
 		accountsCollection: accountsCollection,
@@ -69,22 +83,23 @@ func (bot AccountsBot) String() string {
 
 func (bot *AccountsBot) insertState(state *BotState) {
 	// create the initial bot record.
-	state.ID = bson.NewObjectId()
+	// state.ID = bson.NewObjectId()
+	state.ShardKey = bson.NewObjectId().Hex()
 	state.BotType = "AccountsBot"
 	state.LastWakeTime = time.Now()
 	// An operation that may fail.
 	operation := func() error {
 		bot.logger.Printf("Inserting AccountsBot state: %v\n", state)
-		err := bot.botsCollection.Insert(state)
+		err := bot.botsCollection.Create(state)
 		if err != nil {
-			bot.logger.Printf("Problem inserting data: %T %v %v", err, err, err.(*mgo.LastError))
+			bot.logger.Printf("Problem inserting data: %v", err)
 			return err
 		}
 		return nil
 	}
 	err := backoff.Retry(operation, backoff.NewExponentialBackOff())
 	if err != nil {
-		bot.logger.Fatalf("Error updating record: %T %v", err, err)
+		bot.logger.Panicf("Problem inserting data: %v", err)
 	}
 	bot.logger.Printf("Inserted AccountsBot: %v\n", state)
 }
@@ -92,10 +107,8 @@ func (bot *AccountsBot) insertState(state *BotState) {
 func (bot *AccountsBot) initializeState() {
 	// restore state for accounts bot.
 	// query the db for bot with bottype == AccountsBot.
-	state := BotState{}
-	// err := bot.botsCollection.Find(nil).One(&state)
-	var err error
-	err = bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state)
+	state := &BotState{}
+	err := bot.botsCollection.FindOne(bson.M{"bottype": "AccountsBot"}, state)
 	// operation := func() error {
 	// 	return bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state)
 	// 	// if err != nil {
@@ -107,28 +120,28 @@ func (bot *AccountsBot) initializeState() {
 	// err = backoff.Retry(operation, backoff.NewExponentialBackOff())
 	if err != nil {
 		bot.logger.Printf("Could not find existing bot state: %v\n", err)
-		bot.insertState(&state)
+		bot.insertState(state)
 	} else {
 		state.LastWakeTime = time.Now()
-		updateQuery := bson.M{"_id": state.ID}
+		updateQuery := bson.M{"shardkey": state.ShardKey}
 		change := bson.M{"$set": bson.M{"lastwaketime": state.LastWakeTime}}
 		// An operation that may fail.
 		operation := func() error {
 			bot.logger.Printf("Updating AccountsBot: %v\n", state)
 			err = bot.botsCollection.Update(updateQuery, change)
 			if err != nil {
-				bot.logger.Printf("Error updating record: %T %v %v", err, err, err.(*mgo.LastError))
+				bot.logger.Printf("Error updating record: %v", err)
 				return err
 			}
 			return nil
 		}
 		err = backoff.Retry(operation, backoff.NewExponentialBackOff())
 		if err != nil {
-			bot.logger.Fatalf("Error updating record: %T %v %v", err, err, err.(*mgo.LastError))
+			bot.logger.Panicf("Error updating record: %v", err)
 		}
 		bot.logger.Printf("Updated AccountsBot: %v\n", state)
 	}
-	bot.state = &state
+	bot.state = state
 	bot.logger.Printf("Initialized state for %v\n", bot)
 }
 
@@ -136,8 +149,8 @@ func (bot *AccountsBot) initializeAccounts() {
 	// restore accounts from db.
 	bot.logger.Printf("Initializing accounts for %v.\n", bot)
 	bot.accounts = make(map[string]*models.Account)
-	var accounts []*models.Account
-	err := bot.accountsCollection.Find(nil).All(&accounts)
+	accounts := []*models.Account{}
+	err := bot.accountsCollection.FindAll(nil, &accounts)
 	if err != nil {
 		bot.logger.Fatalf("Error finding accounts: %v\n", err)
 	}
@@ -215,9 +228,9 @@ func (bot *AccountsBot) Work(status chan int) {
 		for _, account := range modifiedAccounts {
 			operation := func() error {
 				bot.logger.Printf("Upserting account: %v\n", account)
-				_, err := bot.accountsCollection.Upsert(bson.M{"_id": account.ID}, account)
+				_, err := bot.accountsCollection.Upsert(bson.M{"shardkey": account.Address}, account)
 				if err != nil {
-					bot.logger.Printf("Problem upserting data: %T %v %v", err, err, err.(*mgo.LastError))
+					bot.logger.Printf("Problem upserting data: %T %v %v", err, err, err.(*mgo.QueryError))
 					return err
 				}
 				bot.logger.Printf("Upserted account: %v\n", account)
@@ -225,7 +238,7 @@ func (bot *AccountsBot) Work(status chan int) {
 			}
 			err := backoff.Retry(operation, backoff.NewExponentialBackOff())
 			if err != nil {
-				bot.logger.Fatalf("Problem upserting data: %T %v %v", err, err, err.(*mgo.LastError))
+				bot.logger.Fatalf("Problem upserting data: %T %v %v", err, err, err.(*mgo.QueryError))
 			}
 		}
 	}
@@ -238,7 +251,7 @@ func (bot *AccountsBot) Work(status chan int) {
 func (bot *AccountsBot) Sleep(statusChannel chan int) {
 	bot.logger.Printf("%v sleeping...\n", bot)
 	bot.state.LastSleepTime = time.Now()
-	updateQuery := bson.M{"_id": bot.state.ID}
+	updateQuery := bson.M{"shardkey": bot.state.ShardKey}
 	change := bson.M{"$set": bson.M{"lastsleeptime": bot.state.LastSleepTime, "lastborrowblockbytoken": bot.state.LastBorrowBlockByToken}}
 	bot.logger.Printf("Updating AccountsBot: %v\n", bot.state)
 	operation := func() error {
@@ -269,9 +282,10 @@ func (bot *AccountsBot) parseAccounts(iter contracts.TokenBorrowIterator, tokenS
 			account, ok := bot.accounts[addressHex]
 			if !ok && borrows.Cmp(big.NewInt(0)) == 1 {
 				account = &models.Account{
-					ID:      bson.NewObjectId(),
-					Address: addressHex,
-					Borrows: make(map[string]*big.Int),
+					ID:       bson.NewObjectId(),
+					ShardKey: addressHex,
+					Address:  addressHex,
+					Borrows:  make(map[string]*big.Int),
 				}
 				account.Borrows[tokenSymbol] = borrows
 				bot.accounts[account.Address] = account

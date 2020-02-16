@@ -1,18 +1,15 @@
 package main
 
 import (
-	"crypto/tls"
+	"context"
 	"log"
-	"net"
-	"time"
 	"os"
 
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/l3a0/carbon/accountsbot"
 	"github.com/l3a0/carbon/contracts"
-
-	"gopkg.in/mgo.v2"
+	"github.com/l3a0/carbon/models"
 )
 
 func main() {
@@ -22,36 +19,42 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("we have a connection\n")
-	database := "bao-blockchain"
-	username := "bao-blockchain"
-	password := ""
-	// DialInfo holds options for establishing a session with Azure Cosmos DB for MongoDB API account.
-	dialInfo := &mgo.DialInfo{
-		Addrs:    []string{"bao-blockchain.mongo.cosmos.azure.com:10255"}, // Get HOST + PORT
-		Timeout:  10 * time.Second,
-		Database: database,
-		Username: username,
-		Password: password,
-		DialServer: func(addr *mgo.ServerAddr) (net.Conn, error) {
-			return tls.Dial("tcp", addr.String(), &tls.Config{})
-		},
-	}
-	// Create a session which maintains a pool of socket connections
-	dbSession, err := mgo.DialWithInfo(dialInfo)
+	cosmosClient := models.NewCosmosService(
+		log.New(os.Stderr, "CosmosClient | ", 0),
+		models.CosmosConfiguration{
+			SubscriptionID:    "6951e94d-0947-4c5e-b865-f864609da246",
+			CloudName:         "AzurePublicCloud",
+			ResourceGroupName: "crmbts-devmachines-bao-blockchain-460259",
+			AccountName:       "bao-blockchain",
+		})
+	cosmosClient.Connect()
+	ctx := context.Background()
+	session, err := cosmosClient.GetSession(ctx)
 	if err != nil {
-		log.Fatalf("Can't connect to cosmos db: %#v\n", err)
+		log.Panicf("cannot get mongoDB session: %v", err)
 	}
-	// log.Printf("Conntected to cosmos db: %#v\n", session)
-	defer dbSession.Close()
-	botsCollection := dbSession.DB("bao-blockchain").C("bots")
-	accountsCollection := dbSession.DB("bao-blockchain").C("accounts")
+	defer session.Close()
+	documentDbCollectionFactory := models.NewCosmosCollectionFactory(
+		log.New(os.Stderr, "DocumentDbCollectionFactory | ", 0),
+		cosmosClient,
+		session)
+	botsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, "bots")
+	if err != nil {
+		log.Panicf("Could not create collection: %v", err)
+	}
+	accountsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, "accounts")
+	if err != nil {
+		log.Panicf("Could not create collection: %v", err)
+	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	var accountsBot accountsbot.Bot
 	tokenContracts, err := contracts.NewTokenContracts(ethClient, logger, contracts.NewToken)
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
-	accountsBot = accountsbot.NewAccountsBot(botsCollection, accountsCollection, tokenContracts, logger)
+	var accountsService accountsbot.AccountsService
+	var botsService accountsbot.BotsService
+	accountsBot = accountsbot.NewAccountsBot(botsCollection, accountsCollection, tokenContracts, logger, accountsService, botsService)
 	status := make(chan int)
 	go accountsBot.Wake(status)
 	log.Printf("Wake status: %v\n", <-status)

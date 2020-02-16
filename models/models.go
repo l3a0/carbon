@@ -3,14 +3,15 @@ package models
 import (
 	"math/big"
 
-	"gopkg.in/mgo.v2/bson"
+	"github.com/globalsign/mgo/bson"
 )
 
 // Account represents an account with debt.
 type Account struct {
-	ID      bson.ObjectId `bson:"_id,omitempty"`
-	Address string
-	Borrows map[string]*big.Int
+	ID       bson.ObjectId `bson:"_id,omitempty"`
+	ShardKey string
+	Address  string
+	Borrows  map[string]*big.Int
 }
 
 // GetBSON marshals the account to BSON.
@@ -19,7 +20,7 @@ func (a *Account) GetBSON() (interface{}, error) {
 	for tokenSymbol, borrow := range a.Borrows {
 		borrows[tokenSymbol] = borrow.String()
 	}
-	bson := bson.M{"_id": a.ID, "address": a.Address, "borrows": borrows}
+	bson := bson.M{"_id": a.ID, "shardkey": a.ShardKey, "address": a.Address, "borrows": borrows}
 	return bson, nil
 }
 
@@ -28,6 +29,7 @@ func (a *Account) SetBSON(raw bson.Raw) error {
 	var v bson.M
 	raw.Unmarshal(&v)
 	a.ID = v["_id"].(bson.ObjectId)
+	a.ShardKey = v["shardkey"].(string)
 	a.Address = v["address"].(string)
 	borrows := v["borrows"].(bson.M)
 	a.Borrows = make(map[string]*big.Int)
