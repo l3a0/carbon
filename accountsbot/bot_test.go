@@ -275,6 +275,14 @@ func TestAccountsBot_Wake(t *testing.T) {
 			// }
 			// botsCollection.DropCollection()
 			// accountsCollection.DropCollection()
+			err = cosmosClient.DeleteSQLContainer(ctx, "mock-bots")
+			if err != nil {
+				t.Errorf("Failed to delete container: %v", err)
+			}
+			err = cosmosClient.DeleteSQLContainer(ctx, "mock-accounts")
+			if err != nil {
+				t.Errorf("Failed to delete container: %v", err)
+			}
 		})
 	}
 }
