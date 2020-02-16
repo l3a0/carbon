@@ -38,7 +38,8 @@ func main() {
 		log.New(os.Stderr, "DocumentDbCollectionFactory | ", 0),
 		cosmosClient,
 		session)
-	botsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, "bots")
+	botsCollectionName := "bots"
+	botsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, botsCollectionName)
 	if err != nil {
 		log.Panicf("Could not create collection: %v", err)
 	}
@@ -52,15 +53,18 @@ func main() {
 	if err != nil {
 		log.Panic(err)
 	}
-	var accountsService accountsbot.AccountsService
-	var botsService accountsbot.BotsService
+	var accountsService models.AccountsService
+	botsService := models.NewCosmosBotsService(
+		log.New(os.Stderr, "DocumentDbCollectionFactory | ", 0),
+		documentDbCollectionFactory,
+		botsCollectionName)
 	accountsBot = accountsbot.NewAccountsBot(botsCollection, accountsCollection, tokenContracts, logger, accountsService, botsService)
 	status := make(chan int)
-	go accountsBot.Wake(status)
+	go accountsBot.Wake(ctx, status)
 	log.Printf("Wake status: %v\n", <-status)
-	go accountsBot.Work(status)
+	go accountsBot.Work(ctx, status)
 	log.Printf("Work status: %v\n", <-status)
-	go accountsBot.Sleep(status)
+	go accountsBot.Sleep(ctx, status)
 	log.Printf("Sleep status: %v\n", <-status)
 
 	// comptrollerAddress := common.HexToAddress("0x3d9819210a31b4961b30ef54be2aed79b9c9cd3b")

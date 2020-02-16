@@ -32,11 +32,13 @@ func TestAccountsBot_Wake(t *testing.T) {
 		log.New(os.Stderr, "DocumentDbCollectionFactory | ", 0),
 		cosmosClient,
 		session)
-	botsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, "mock-bots")
+	botsCollectionName := "mock-bots"
+	accountsCollectionName := "mock-accounts"
+	botsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, botsCollectionName)
 	if err != nil {
 		t.Errorf("Could not create collection: %v", err)
 	}
-	accountsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, "mock-accounts")
+	accountsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, accountsCollectionName)
 	if err != nil {
 		t.Errorf("Could not create collection: %v", err)
 	}
@@ -69,8 +71,11 @@ func TestAccountsBot_Wake(t *testing.T) {
 	tokensProvider := &contracts.MockTokenContracts{
 		Contracts: fakeContracts,
 	}
-	var accountsService AccountsService
-	var botsService BotsService
+	var accountsService models.AccountsService
+	botsService := models.NewCosmosBotsService(
+		log.New(os.Stderr, "DocumentDbCollectionFactory | ", 0),
+		documentDbCollectionFactory,
+		botsCollectionName)
 	// var buf bytes.Buffer
 	// logger := log.New(&buf, "", 0)
 	logger := log.New(os.Stderr, "", 0)
@@ -79,8 +84,8 @@ func TestAccountsBot_Wake(t *testing.T) {
 		accountsCollection models.Collection
 		tokensProvider     contracts.TokensProvider
 		logger             *log.Logger
-		accountsService    AccountsService
-		botsService        BotsService
+		accountsService    models.AccountsService
+		botsService        models.BotsService
 	}
 	type args struct {
 		statusChannel chan int
@@ -115,22 +120,22 @@ func TestAccountsBot_Wake(t *testing.T) {
 				tt.fields.accountsService,
 				tt.fields.botsService)
 			// Act
-			go bot.Wake(tt.args.statusChannel)
+			go bot.Wake(ctx, tt.args.statusChannel)
 			status := <-tt.args.statusChannel
 			if status != 0 {
 				t.Errorf("status := <-tt.args.statusChannel = %v, want %v", status, 0)
 			}
-			go bot.Work(tt.args.statusChannel)
+			go bot.Work(ctx, tt.args.statusChannel)
 			status = <-tt.args.statusChannel
 			if status != 0 {
 				t.Errorf("status := <-tt.args.statusChannel = %v, want %v", status, 0)
 			}
-			go bot.Sleep(tt.args.statusChannel)
+			go bot.Sleep(ctx, tt.args.statusChannel)
 			status = <-tt.args.statusChannel
 			if status != 0 {
 				t.Errorf("status := <-tt.args.statusChannel = %v, want %v", status, 0)
 			}
-			go bot.Wake(tt.args.statusChannel)
+			go bot.Wake(ctx, tt.args.statusChannel)
 			status = <-tt.args.statusChannel
 			if status != 0 {
 				t.Errorf("status := <-tt.args.statusChannel = %v, want %v", status, 0)
@@ -275,11 +280,11 @@ func TestAccountsBot_Wake(t *testing.T) {
 			// }
 			// botsCollection.DropCollection()
 			// accountsCollection.DropCollection()
-			err = cosmosClient.DeleteSQLContainer(ctx, "mock-bots")
+			err = cosmosClient.DeleteSQLContainer(ctx, botsCollectionName)
 			if err != nil {
 				t.Errorf("Failed to delete container: %v", err)
 			}
-			err = cosmosClient.DeleteSQLContainer(ctx, "mock-accounts")
+			err = cosmosClient.DeleteSQLContainer(ctx, accountsCollectionName)
 			if err != nil {
 				t.Errorf("Failed to delete container: %v", err)
 			}

@@ -1,6 +1,7 @@
 package accountsbot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,26 +21,20 @@ import (
 
 // Bot represents some logic that runs in background.
 type Bot interface {
-	Wake(statusChannel chan int)
-	Work(statusChannel chan int)
-	Sleep(statusChannel chan int)
-}
-
-// AccountsService is responsible for CRUD on account data.
-type AccountsService interface {
-}
-
-// BotsService is responsible for CRUD on bot data.
-type BotsService interface {
+	Wake(ctx context.Context, statusChannel chan int)
+	Work(ctx context.Context, statusChannel chan int)
+	Sleep(ctx context.Context, statusChannel chan int)
 }
 
 // AccountsBot maintains state for accounts with debt.
 type AccountsBot struct {
-	accounts           map[string]*models.Account
-	tokens             map[string]contracts.Token
-	tokenAddresses     map[string]common.Address
-	botsCollection     models.Collection
+	accounts       map[string]*models.Account
+	tokens         map[string]contracts.Token
+	tokenAddresses map[string]common.Address
+	// botsCollection     models.Collection
 	accountsCollection models.Collection
+	botsService        models.BotsService
+	accountsService    models.AccountsService
 	state              *BotState
 	logger             *log.Logger
 }
@@ -53,17 +48,18 @@ type BotState struct {
 	LastBorrowBlockByToken map[string]uint64
 }
 
+// GetShardKey returns the shard key.
+func (state *BotState) GetShardKey() string {
+	return state.ShardKey
+}
+
 // NewAccountsBot creates a new AccountsBot.
-func NewAccountsBot(
-	botsCollection models.Collection,
-	accountsCollection models.Collection,
-	tokensProvider contracts.TokensProvider,
-	logger *log.Logger,
-	accountsService AccountsService,
-	botsService BotsService) *AccountsBot {
+func NewAccountsBot(botsCollection models.Collection, accountsCollection models.Collection, tokensProvider contracts.TokensProvider, logger *log.Logger, accountsService models.AccountsService, botsService models.BotsService) *AccountsBot {
 	return &AccountsBot{
-		botsCollection:     botsCollection,
+		// botsCollection:     botsCollection,
 		accountsCollection: accountsCollection,
+		botsService:        botsService,
+		accountsService:    accountsService,
 		tokens:             tokensProvider.GetTokens(),
 		tokenAddresses:     tokensProvider.GetAddresses(),
 		logger:             logger,
@@ -81,16 +77,15 @@ func (bot AccountsBot) String() string {
 	return fmt.Sprintf("AccountsBot{%v}", bot.state)
 }
 
-func (bot *AccountsBot) insertState(state *BotState) {
+func (bot *AccountsBot) insertState(ctx context.Context, state *BotState) {
 	// create the initial bot record.
-	// state.ID = bson.NewObjectId()
 	state.ShardKey = bson.NewObjectId().Hex()
 	state.BotType = "AccountsBot"
 	state.LastWakeTime = time.Now()
 	// An operation that may fail.
 	operation := func() error {
 		bot.logger.Printf("Inserting AccountsBot state: %v\n", state)
-		err := bot.botsCollection.Create(state)
+		err := bot.botsService.CreateBotState(ctx, state)
 		if err != nil {
 			bot.logger.Printf("Problem inserting data: %v", err)
 			return err
@@ -104,23 +99,14 @@ func (bot *AccountsBot) insertState(state *BotState) {
 	bot.logger.Printf("Inserted AccountsBot: %v\n", state)
 }
 
-func (bot *AccountsBot) initializeState() {
+func (bot *AccountsBot) initializeState(ctx context.Context) {
 	// restore state for accounts bot.
 	// query the db for bot with bottype == AccountsBot.
 	state := &BotState{}
-	err := bot.botsCollection.FindOne(bson.M{"bottype": "AccountsBot"}, state)
-	// operation := func() error {
-	// 	return bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state)
-	// 	// if err != nil {
-	// 	// 	// bot.logger.Printf(`bot.botsCollection.Find(bson.M{"bottype": "AccountsBot"}).One(&state) error = %v`, err)
-	// 	// 	return err
-	// 	// }
-	// 	// return nil
-	// }
-	// err = backoff.Retry(operation, backoff.NewExponentialBackOff())
+	err := bot.botsService.GetBotState(ctx, state)
 	if err != nil {
 		bot.logger.Printf("Could not find existing bot state: %v\n", err)
-		bot.insertState(state)
+		bot.insertState(ctx, state)
 	} else {
 		state.LastWakeTime = time.Now()
 		updateQuery := bson.M{"shardkey": state.ShardKey}
@@ -128,7 +114,7 @@ func (bot *AccountsBot) initializeState() {
 		// An operation that may fail.
 		operation := func() error {
 			bot.logger.Printf("Updating AccountsBot: %v\n", state)
-			err = bot.botsCollection.Update(updateQuery, change)
+			err = bot.botsService.UpdateBotState(ctx, updateQuery, change)
 			if err != nil {
 				bot.logger.Printf("Error updating record: %v", err)
 				return err
@@ -161,9 +147,9 @@ func (bot *AccountsBot) initializeAccounts() {
 }
 
 // Wake gets the bot ready for work.
-func (bot *AccountsBot) Wake(statusChannel chan int) {
+func (bot *AccountsBot) Wake(ctx context.Context, statusChannel chan int) {
 	bot.logger.Printf("%v waking...\n", bot)
-	bot.initializeState()
+	bot.initializeState(ctx)
 	bot.initializeAccounts()
 	statusChannel <- 0
 }
@@ -191,7 +177,7 @@ func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string,
 }
 
 // Work puts the bot to work.
-func (bot *AccountsBot) Work(status chan int) {
+func (bot *AccountsBot) Work(ctx context.Context, status chan int) {
 	bot.logger.Printf("%v working...\n", bot)
 	// TODO: go routine per token contract?
 	modifiedAccounts := map[string]*models.Account{}
@@ -248,14 +234,14 @@ func (bot *AccountsBot) Work(status chan int) {
 }
 
 // Sleep saves the bot's state and lets it rest.
-func (bot *AccountsBot) Sleep(statusChannel chan int) {
+func (bot *AccountsBot) Sleep(ctx context.Context, statusChannel chan int) {
 	bot.logger.Printf("%v sleeping...\n", bot)
 	bot.state.LastSleepTime = time.Now()
 	updateQuery := bson.M{"shardkey": bot.state.ShardKey}
 	change := bson.M{"$set": bson.M{"lastsleeptime": bot.state.LastSleepTime, "lastborrowblockbytoken": bot.state.LastBorrowBlockByToken}}
 	bot.logger.Printf("Updating AccountsBot: %v\n", bot.state)
 	operation := func() error {
-		err := bot.botsCollection.Update(updateQuery, change)
+		err := bot.botsService.UpdateBotState(ctx, updateQuery, change)
 		if err != nil {
 			bot.logger.Printf("Error updating record: %T %v", err, err)
 			return err
