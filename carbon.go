@@ -38,27 +38,29 @@ func main() {
 		log.New(os.Stderr, "DocumentDbCollectionFactory | ", 0),
 		cosmosClient,
 		session)
-	botsCollectionName := "bots"
-	botsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, botsCollectionName)
-	if err != nil {
-		log.Panicf("Could not create collection: %v", err)
-	}
-	accountsCollection, err := documentDbCollectionFactory.CreateCollection(ctx, "accounts")
-	if err != nil {
-		log.Panicf("Could not create collection: %v", err)
-	}
-	logger := log.New(os.Stderr, "", log.LstdFlags)
 	var accountsBot accountsbot.Bot
-	tokenContracts, err := contracts.NewTokenContracts(ethClient, logger, contracts.NewToken)
+	tokenContracts, err := contracts.NewTokenContracts(
+		ethClient,
+		log.New(os.Stderr, "TokenFactory | ", log.LstdFlags),
+		contracts.NewToken)
 	if err != nil {
 		log.Panic(err)
 	}
-	var accountsService models.AccountsService
+	botsCollectionName := "bots"
+	accountsCollectionName := "accounts"
+	accountsService := models.NewCosmosAccountsService(
+		log.New(os.Stderr, "CosmosAccountsService | ", 0),
+		documentDbCollectionFactory,
+		accountsCollectionName)
 	botsService := models.NewCosmosBotsService(
 		log.New(os.Stderr, "DocumentDbCollectionFactory | ", 0),
 		documentDbCollectionFactory,
 		botsCollectionName)
-	accountsBot = accountsbot.NewAccountsBot(botsCollection, accountsCollection, tokenContracts, logger, accountsService, botsService)
+	accountsBot = accountsbot.NewAccountsBot(
+		tokenContracts,
+		log.New(os.Stderr, "AccountsBot | ", log.LstdFlags),
+		accountsService,
+		botsService)
 	status := make(chan int)
 	go accountsBot.Wake(ctx, status)
 	log.Printf("Wake status: %v\n", <-status)

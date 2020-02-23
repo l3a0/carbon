@@ -28,15 +28,13 @@ type Bot interface {
 
 // AccountsBot maintains state for accounts with debt.
 type AccountsBot struct {
-	accounts       map[string]*models.Account
-	tokens         map[string]contracts.Token
-	tokenAddresses map[string]common.Address
-	// botsCollection     models.Collection
-	accountsCollection models.Collection
-	botsService        models.BotsService
-	accountsService    models.AccountsService
-	state              *BotState
-	logger             *log.Logger
+	accounts        map[string]*models.Account
+	tokens          map[string]contracts.Token
+	tokenAddresses  map[string]common.Address
+	botsService     models.BotsService
+	accountsService models.AccountsService
+	state           *BotState
+	logger          *log.Logger
 }
 
 // BotState represents the state of the bot.
@@ -54,15 +52,13 @@ func (state *BotState) GetShardKey() string {
 }
 
 // NewAccountsBot creates a new AccountsBot.
-func NewAccountsBot(botsCollection models.Collection, accountsCollection models.Collection, tokensProvider contracts.TokensProvider, logger *log.Logger, accountsService models.AccountsService, botsService models.BotsService) *AccountsBot {
+func NewAccountsBot(tokensProvider contracts.TokensProvider, logger *log.Logger, accountsService models.AccountsService, botsService models.BotsService) *AccountsBot {
 	return &AccountsBot{
-		// botsCollection:     botsCollection,
-		accountsCollection: accountsCollection,
-		botsService:        botsService,
-		accountsService:    accountsService,
-		tokens:             tokensProvider.GetTokens(),
-		tokenAddresses:     tokensProvider.GetAddresses(),
-		logger:             logger,
+		botsService:     botsService,
+		accountsService: accountsService,
+		tokens:          tokensProvider.GetTokens(),
+		tokenAddresses:  tokensProvider.GetAddresses(),
+		logger:          logger,
 	}
 }
 
@@ -131,12 +127,12 @@ func (bot *AccountsBot) initializeState(ctx context.Context) {
 	bot.logger.Printf("Initialized state for %v\n", bot)
 }
 
-func (bot *AccountsBot) initializeAccounts() {
+func (bot *AccountsBot) initializeAccounts(ctx context.Context) {
 	// restore accounts from db.
 	bot.logger.Printf("Initializing accounts for %v.\n", bot)
 	bot.accounts = make(map[string]*models.Account)
 	accounts := []*models.Account{}
-	err := bot.accountsCollection.FindAll(nil, &accounts)
+	err := bot.accountsService.GetAccounts(ctx, &accounts)
 	if err != nil {
 		bot.logger.Fatalf("Error finding accounts: %v\n", err)
 	}
@@ -150,7 +146,7 @@ func (bot *AccountsBot) initializeAccounts() {
 func (bot *AccountsBot) Wake(ctx context.Context, statusChannel chan int) {
 	bot.logger.Printf("%v waking...\n", bot)
 	bot.initializeState(ctx)
-	bot.initializeAccounts()
+	bot.initializeAccounts(ctx)
 	statusChannel <- 0
 }
 
@@ -214,7 +210,7 @@ func (bot *AccountsBot) Work(ctx context.Context, status chan int) {
 		for _, account := range modifiedAccounts {
 			operation := func() error {
 				bot.logger.Printf("Upserting account: %v\n", account)
-				_, err := bot.accountsCollection.Upsert(bson.M{"shardkey": account.Address}, account)
+				err := bot.accountsService.UpsertAccount(ctx, account)
 				if err != nil {
 					bot.logger.Printf("Problem upserting data: %T %v %v", err, err, err.(*mgo.QueryError))
 					return err
