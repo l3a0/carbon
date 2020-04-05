@@ -87,6 +87,7 @@ func TestAccountsBot_Wake(t *testing.T) {
 		logger,
 		documentDbCollectionFactory,
 		botsCollectionName)
+	comptrollerService := &models.MockComptroller{}
 	type fields struct {
 		botsCollection     models.Collection
 		accountsCollection models.Collection
@@ -94,6 +95,7 @@ func TestAccountsBot_Wake(t *testing.T) {
 		logger             *log.Logger
 		accountsService    models.AccountsService
 		botsService        models.BotsService
+		comptrollerService models.ComptrollerService
 	}
 	type args struct {
 		statusChannel chan int
@@ -112,6 +114,7 @@ func TestAccountsBot_Wake(t *testing.T) {
 				logger:             logger,
 				accountsService:    accountsService,
 				botsService:        botsService,
+				comptrollerService: comptrollerService,
 			},
 			args: args{
 				statusChannel: make(chan int),
@@ -124,7 +127,8 @@ func TestAccountsBot_Wake(t *testing.T) {
 				tt.fields.tokensProvider,
 				tt.fields.logger,
 				tt.fields.accountsService,
-				tt.fields.botsService)
+				tt.fields.botsService,
+				tt.fields.comptrollerService)
 			// Act
 			go bot.Wake(ctx, tt.args.statusChannel)
 			status := <-tt.args.statusChannel
@@ -258,16 +262,6 @@ func TestAccountsBot_Wake(t *testing.T) {
 				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Updated account: "0x0000000000000000000000000000000000000000". Borrowed 1 ("*")`)
 			}
 			output, _ = buf.ReadString('\n')
-			re = regexp.MustCompile(`Upserting account: &{ObjectIdHex\("[a-f\d]{24}"\) 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map\[CBAT:1 CUSDC:1\]}`)
-			if !re.MatchString(output) {
-				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Upserting account: &{ObjectIdHex("*") 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map[CBAT:1 CUSDC:1]}`)
-			}
-			output, _ = buf.ReadString('\n')
-			re = regexp.MustCompile(`Upserted account: &{ObjectIdHex\("[a-f\d]{24}"\) 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map\[CBAT:1 CUSDC:1\]}`)
-			if !re.MatchString(output) {
-				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Upserted account: &{ObjectIdHex("*") 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map[CBAT:1 CUSDC:1]}`)
-			}
-			output, _ = buf.ReadString('\n')
 			re = regexp.MustCompile(`numberOfModifiedAccounts: 1`)
 			if !re.MatchString(output) {
 				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `numberOfModifiedAccounts: 1`)
@@ -276,6 +270,26 @@ func TestAccountsBot_Wake(t *testing.T) {
 			re = regexp.MustCompile(`numberOfAccounts: 1`)
 			if !re.MatchString(output) {
 				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `numberOfAccounts: 1`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`Upserting account: &{ObjectIdHex\("[a-f\d]{24}"\) 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map\[CBAT:1 CUSDC:1\] <nil> <nil>}`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Upserting account: &{ObjectIdHex("*") 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map[CBAT:1 CUSDC:1] <nil> <nil>}`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`Upserted account: &{ObjectIdHex\("[a-f\d]{24}"\) 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map\[CBAT:1 CUSDC:1\] <nil> <nil>}`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Upserted account: &{ObjectIdHex("*") 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map[CBAT:1 CUSDC:1] <nil> <nil>}`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`Getting liquidity for account: &{ObjectIdHex\("[a-f\d]{24}"\) 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map\[CBAT:1 CUSDC:1\] <nil> <nil>}`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Getting liquidity for account: &{ObjectIdHex("5e8a5b7b3fdf131e907eefb5") 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map[CBAT:1 CUSDC:1] <nil> <nil>}`)
+			}
+			output, _ = buf.ReadString('\n')
+			re = regexp.MustCompile(`Liquidity for account: &{ObjectIdHex\("[a-f\d]{24}"\) 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map\[CBAT:1 CUSDC:1\] 1 0}`)
+			if !re.MatchString(output) {
+				t.Errorf("output, _ = buf.ReadString('\\n') = %v, want %v", output, `Liquidity for account: &{ObjectIdHex("5e8a5b7b3fdf131e907eefb5") 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000 map[CBAT:1 CUSDC:1] 1 0}`)
 			}
 			output, _ = buf.ReadString('\n')
 			re = regexp.MustCompile(`AccountsBot{{"ShardKey":"[a-f\d]{24}","BotType":"AccountsBot","LastWakeTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastSleepTime":"(-?(?:[1-9][0-9]*)?[0-9]{4})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])T(2[0-3]|[01][0-9]):([0-5][0-9]):([0-5][0-9])(.[0-9]+)?(Z)?([+-][0-2]\d:[0-5]\d)?","LastBorrowBlockByToken":{"CBAT":0,"CUSDC":0}}} sleeping...`)

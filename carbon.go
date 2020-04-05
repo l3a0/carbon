@@ -20,7 +20,7 @@ func main() {
 	}
 	log.Printf("we have a connection\n")
 	cosmosClient := models.NewCosmosService(
-		log.New(os.Stderr, "CosmosClient | ", 0),
+		log.New(os.Stderr, "CosmosClient | ", log.LstdFlags),
 		models.CosmosConfiguration{
 			SubscriptionID:    "6951e94d-0947-4c5e-b865-f864609da246",
 			CloudName:         "AzurePublicCloud",
@@ -35,7 +35,7 @@ func main() {
 	}
 	defer session.Close()
 	documentDbCollectionFactory := models.NewCosmosCollectionFactory(
-		log.New(os.Stderr, "DocumentDbCollectionFactory | ", 0),
+		log.New(os.Stderr, "DocumentDbCollectionFactory | ", log.LstdFlags),
 		cosmosClient,
 		session)
 	var accountsBot accountsbot.Bot
@@ -49,18 +49,22 @@ func main() {
 	botsCollectionName := "bots"
 	accountsCollectionName := "accounts"
 	accountsService := models.NewCosmosAccountsService(
-		log.New(os.Stderr, "CosmosAccountsService | ", 0),
+		log.New(os.Stderr, "CosmosAccountsService | ", log.LstdFlags),
 		documentDbCollectionFactory,
 		accountsCollectionName)
 	botsService := models.NewCosmosBotsService(
-		log.New(os.Stderr, "DocumentDbCollectionFactory | ", 0),
+		log.New(os.Stderr, "DocumentDbCollectionFactory | ", log.LstdFlags),
 		documentDbCollectionFactory,
 		botsCollectionName)
+	comptrollerService := models.NewComptrollerService(
+		log.New(os.Stderr, "ComptrollerService | ", log.LstdFlags),
+		ethClient)
 	accountsBot = accountsbot.NewAccountsBot(
 		tokenContracts,
 		log.New(os.Stderr, "AccountsBot | ", log.LstdFlags),
 		accountsService,
-		botsService)
+		botsService,
+		comptrollerService)
 	status := make(chan int)
 	go accountsBot.Wake(ctx, status)
 	log.Printf("Wake status: %v\n", <-status)
@@ -68,33 +72,4 @@ func main() {
 	log.Printf("Work status: %v\n", <-status)
 	go accountsBot.Sleep(ctx, status)
 	log.Printf("Sleep status: %v\n", <-status)
-
-	// comptrollerAddress := common.HexToAddress("0x3d9819210a31b4961b30ef54be2aed79b9c9cd3b")
-	// comptroller, err := NewComptroller(comptrollerAddress, ethClient)
-
-	// if err != nil {
-	//     log.Fatalf("Failed to load comptroller: %#v\n", err)
-	// }
-
-	// fmt.Printf("comptroller: %#v\n", comptroller)
-
-	// i := 0
-
-	// for key, element := range accounts {
-	//     if i > 5 {
-	//         break
-	//     }
-
-	//     fmt.Println("Key:", key, "=>", "Element:", element)
-
-	//     error, liquidity, shortfall, err := comptroller.GetAccountLiquidity(nil, common.HexToAddress(element.address))
-
-	//     if err != nil {
-	//         log.Fatalf("Failed to GetAccountLiquidity: %#v\n", err)
-	//     }
-
-	//     fmt.Printf("error: %#v liquidity: %#v shortfall: %#v\n", error, liquidity, shortfall)
-	//     i++
-	// }
-	// }
 }

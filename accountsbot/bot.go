@@ -11,7 +11,6 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/globalsign/mgo"
 	"github.com/globalsign/mgo/bson"
 	"gopkg.in/cenkalti/backoff.v2"
 
@@ -28,13 +27,14 @@ type Bot interface {
 
 // AccountsBot maintains state for accounts with debt.
 type AccountsBot struct {
-	accounts        map[string]*models.Account
-	tokens          map[string]contracts.Token
-	tokenAddresses  map[string]common.Address
-	botsService     models.BotsService
-	accountsService models.AccountsService
-	state           *BotState
-	logger          *log.Logger
+	accounts           map[string]*models.Account
+	tokens             map[string]contracts.Token
+	tokenAddresses     map[string]common.Address
+	botsService        models.BotsService
+	accountsService    models.AccountsService
+	comptrollerService models.ComptrollerService
+	state              *BotState
+	logger             *log.Logger
 }
 
 // BotState represents the state of the bot.
@@ -52,14 +52,106 @@ func (state *BotState) GetShardKey() string {
 }
 
 // NewAccountsBot creates a new AccountsBot.
-func NewAccountsBot(tokensProvider contracts.TokensProvider, logger *log.Logger, accountsService models.AccountsService, botsService models.BotsService) *AccountsBot {
+func NewAccountsBot(
+	tokensProvider contracts.TokensProvider,
+	logger *log.Logger,
+	accountsService models.AccountsService,
+	botsService models.BotsService,
+	comptrollerService models.ComptrollerService) Bot {
 	return &AccountsBot{
-		botsService:     botsService,
-		accountsService: accountsService,
-		tokens:          tokensProvider.GetTokens(),
-		tokenAddresses:  tokensProvider.GetAddresses(),
-		logger:          logger,
+		botsService:        botsService,
+		accountsService:    accountsService,
+		comptrollerService: comptrollerService,
+		tokens:             tokensProvider.GetTokens(),
+		tokenAddresses:     tokensProvider.GetAddresses(),
+		logger:             logger,
 	}
+}
+
+// Wake gets the bot ready for work.
+func (bot *AccountsBot) Wake(ctx context.Context, statusChannel chan int) {
+	bot.logger.Printf("%v waking...\n", bot)
+	bot.initializeState(ctx)
+	bot.initializeAccounts(ctx)
+	statusChannel <- 0
+}
+
+// Work puts the bot to work.
+func (bot *AccountsBot) Work(ctx context.Context, status chan int) {
+	bot.logger.Printf("%v working...\n", bot)
+	// TODO: go routine per token contract?
+	modifiedAccounts := map[string]*models.Account{}
+	for tokenSymbol, token := range bot.tokens {
+		tokenName, err := token.Name(nil)
+		if err != nil {
+			bot.logger.Fatalf("Failed to retrieve %v token name: %v", tokenSymbol, err)
+		}
+		iter := bot.filterBorrowEvents(tokenSymbol, tokenName, token)
+		if iter != nil {
+			if bot.state.LastBorrowBlockByToken == nil {
+				bot.state.LastBorrowBlockByToken = make(map[string]uint64)
+			}
+			bot.state.LastBorrowBlockByToken[tokenSymbol] = bot.parseAccountBorrowBalancesFromBorrowEvents(iter, tokenSymbol, modifiedAccounts)
+		}
+	}
+	numberOfModifiedAccounts := len(modifiedAccounts)
+	numberOfAccounts := len(bot.accounts)
+	// Assert the invariant: number of modified accounts is not greater than the total number of accounts.
+	if numberOfModifiedAccounts > numberOfAccounts {
+		bot.logger.Panicf("numberOfModifiedAccounts > numberOfAccounts.\n")
+	}
+	bot.logger.Printf("numberOfModifiedAccounts: %v\n", numberOfModifiedAccounts)
+	bot.logger.Printf("numberOfAccounts: %v\n", numberOfAccounts)
+	if numberOfModifiedAccounts > 0 {
+		// TODO: go routine per account w/ bounded parallelism?
+		for _, account := range modifiedAccounts {
+			// TODO: move backoff logic into accounts service.
+			operation := func() error {
+				bot.logger.Printf("Upserting account: %v\n", account)
+				err := bot.accountsService.UpsertAccount(ctx, account)
+				if err != nil {
+					bot.logger.Printf("Problem upserting data: %v", err)
+					return err
+				}
+				bot.logger.Printf("Upserted account: %v\n", account)
+				return nil
+			}
+			err := backoff.Retry(operation, backoff.NewExponentialBackOff())
+			if err != nil {
+				bot.logger.Panicf("Problem upserting data: %v", err)
+			}
+		}
+	}
+	for _, account := range bot.accounts {
+		totalBorrows := big.NewInt(0)
+		for _, tokenBorrows := range account.Borrows {
+			totalBorrows = totalBorrows.Add(totalBorrows, tokenBorrows)
+		}
+		// Assert the invariant: no account has zero total borrows across all tokens.
+		if totalBorrows.Cmp(common.Big0) <= 0 {
+			bot.logger.Panicf("Account %v has totalBorrows = %v.\n", account, totalBorrows)
+		}
+		bot.liquidateAccount(account)
+	}
+	status <- 0
+}
+
+func (bot *AccountsBot) liquidateAccount(account *models.Account) {
+	bot.getAccountLiquidity(account)
+	if account.Liquidity.Cmp(common.Big0) == 0 && account.Shortfall.Cmp(common.Big0) == 0 {
+
+	}
+}
+
+func (bot *AccountsBot) getAccountLiquidity(account *models.Account) {
+	bot.logger.Printf("Getting liquidity for account: %v", account)
+	errorCode, liquidity, shortfall, err := bot.comptrollerService.GetAccountLiquidity(nil, common.HexToAddress(account.Address))
+	if err != nil || errorCode.Cmp(big.NewInt(0)) > 0 {
+		bot.logger.Panicf("Problem getting account liquidity: %v, errorCode = %v", err, errorCode)
+	}
+	account.Liquidity = liquidity
+	account.Shortfall = shortfall
+	bot.logger.Printf("Liquidity for account: %v", account)
 }
 
 // String returns string representation of the bot.
@@ -142,17 +234,9 @@ func (bot *AccountsBot) initializeAccounts(ctx context.Context) {
 	bot.logger.Printf("Initialized %v accounts for %v.\n", len(bot.accounts), bot)
 }
 
-// Wake gets the bot ready for work.
-func (bot *AccountsBot) Wake(ctx context.Context, statusChannel chan int) {
-	bot.logger.Printf("%v waking...\n", bot)
-	bot.initializeState(ctx)
-	bot.initializeAccounts(ctx)
-	statusChannel <- 0
-}
-
 func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string, token contracts.Token) contracts.TokenBorrowIterator {
 	bot.logger.Printf("Processing accounts for token %v (%v) at block # %v @ %v\n", tokenName, tokenSymbol, bot.state.LastBorrowBlockByToken[tokenSymbol], bot.tokenAddresses[tokenSymbol].Hex())
-	// +1 => exclude the last borrow block.
+	// alternatively, +1 => exclude the last borrow block.
 	filterOptions := &bind.FilterOpts{Start: bot.state.LastBorrowBlockByToken[tokenSymbol], End: nil, Context: nil}
 	var iter contracts.TokenBorrowIterator
 	var err error
@@ -170,63 +254,6 @@ func (bot *AccountsBot) filterBorrowEvents(tokenSymbol string, tokenName string,
 		bot.logger.Fatalf("Failed to FilterBorrowEvents for token %v: %v", tokenSymbol, err)
 	}
 	return iter
-}
-
-// Work puts the bot to work.
-func (bot *AccountsBot) Work(ctx context.Context, status chan int) {
-	bot.logger.Printf("%v working...\n", bot)
-	// TODO: go routine per token contract?
-	modifiedAccounts := map[string]*models.Account{}
-	for tokenSymbol, token := range bot.tokens {
-		tokenName, err := token.Name(nil)
-		if err != nil {
-			bot.logger.Fatalf("Failed to retrieve %v token name: %v", tokenSymbol, err)
-		}
-		iter := bot.filterBorrowEvents(tokenSymbol, tokenName, token)
-		if iter != nil {
-			if bot.state.LastBorrowBlockByToken == nil {
-				bot.state.LastBorrowBlockByToken = make(map[string]uint64)
-			}
-			bot.state.LastBorrowBlockByToken[tokenSymbol] = bot.parseAccounts(iter, tokenSymbol, modifiedAccounts)
-		}
-	}
-	numberOfModifiedAccounts := len(modifiedAccounts)
-	numberOfAccounts := len(bot.accounts)
-	// Assert the invariant: number of modified accounts is not greater than the total number of accounts.
-	if numberOfModifiedAccounts > numberOfAccounts {
-		bot.logger.Panicf("numberOfModifiedAccounts > numberOfAccounts.\n")
-	}
-	// Assert the invariant: no account has zero total borrows across all tokens.
-	for _, account := range bot.accounts {
-		totalBorrows := big.NewInt(0)
-		for _, tokenBorrows := range account.Borrows {
-			totalBorrows = totalBorrows.Add(totalBorrows, tokenBorrows)
-		}
-		if totalBorrows.Cmp(common.Big0) <= 0 {
-			bot.logger.Panicf("Account %v has totalBorrows = %v.\n", account, totalBorrows)
-		}
-	}
-	if numberOfAccounts > 0 {
-		for _, account := range modifiedAccounts {
-			operation := func() error {
-				bot.logger.Printf("Upserting account: %v\n", account)
-				err := bot.accountsService.UpsertAccount(ctx, account)
-				if err != nil {
-					bot.logger.Printf("Problem upserting data: %T %v %v", err, err, err.(*mgo.QueryError))
-					return err
-				}
-				bot.logger.Printf("Upserted account: %v\n", account)
-				return nil
-			}
-			err := backoff.Retry(operation, backoff.NewExponentialBackOff())
-			if err != nil {
-				bot.logger.Fatalf("Problem upserting data: %T %v %v", err, err, err.(*mgo.QueryError))
-			}
-		}
-	}
-	bot.logger.Printf("numberOfModifiedAccounts: %v\n", numberOfModifiedAccounts)
-	bot.logger.Printf("numberOfAccounts: %v\n", numberOfAccounts)
-	status <- 0
 }
 
 // Sleep saves the bot's state and lets it rest.
@@ -252,7 +279,7 @@ func (bot *AccountsBot) Sleep(ctx context.Context, statusChannel chan int) {
 	statusChannel <- 0
 }
 
-func (bot *AccountsBot) parseAccounts(iter contracts.TokenBorrowIterator, tokenSymbol string, modifiedAccounts map[string]*models.Account) uint64 {
+func (bot *AccountsBot) parseAccountBorrowBalancesFromBorrowEvents(iter contracts.TokenBorrowIterator, tokenSymbol string, modifiedAccounts map[string]*models.Account) uint64 {
 	bot.logger.Printf("Parsing accounts...\n")
 	var lastBlock uint64 = 0
 	for i := 0; iter.Next(); i++ {
